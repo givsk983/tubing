@@ -1,0 +1,11 @@
+.android-sdk/
+.gradle-home/
+.gradle-tmp/
+.bootstrap/
+.gradle/
+.kotlin/
+local.properties
+repository2-1.xml
+app/build/
+dist/
+build-tubing.log

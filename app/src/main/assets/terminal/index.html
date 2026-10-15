@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><link rel="stylesheet" href="xterm.css"><style>html,body,#terminal{height:100%;width:100%;margin:0;overflow:hidden}#terminal{box-sizing:border-box;padding:8px}.xterm{height:100%}</style></head><body><div id="terminal"></div><script src="xterm.js"></script><script>
+const light=location.search.includes('light');
+const term=new Terminal({cursorBlink:true,convertEol:false,scrollback:5000,fontSize:14,fontFamily:'monospace',theme:{background:light?'#f2f5f8':'#0a1018',foreground:light?'#172636':'#d9e7f5',cursor:'#28b9cf',selectionBackground:'#28b9cf55'},allowProposedApi:true});
+term.open(document.getElementById('terminal'));
+term.onData(data=>Android.send(data));
+function fit(){const cell=term._core._renderService.dimensions.css.cell;if(!cell.width||!cell.height)return;const cols=Math.max(10,Math.floor((innerWidth-16)/cell.width));const rows=Math.max(2,Math.floor((innerHeight-16)/cell.height));term.resize(cols,rows);Android.resize(cols,rows)}
+window.feed=text=>term.write(text);window.setSize=size=>{term.options.fontSize=size;setTimeout(fit,0)};window.key=data=>{Android.send(data);term.focus()};
+new ResizeObserver(fit).observe(document.getElementById('terminal'));document.getElementById('terminal').addEventListener('click',()=>term.focus());setTimeout(()=>{fit();Android.ready()},100);
+</script></body></html>
