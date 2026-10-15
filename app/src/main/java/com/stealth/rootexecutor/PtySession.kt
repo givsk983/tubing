@@ -26,6 +26,7 @@ class PtySession(private val root: RootExecutor, private val token: String) : Ex
     @Volatile private var closed = false
     @Volatile private var process: Process? = null
     private val stopOnce = AtomicBoolean(false)
+    override val inputReady: Boolean get() = fd >= 0 && process?.isAlive == true
 
     override fun run(file: ManagedFile, output: (String) -> Unit): Int {
         check(!closed) { "执行已取消" }

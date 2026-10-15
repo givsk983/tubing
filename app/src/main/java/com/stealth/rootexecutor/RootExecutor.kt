@@ -7,10 +7,12 @@ import java.util.UUID
 data class ManagedFile(val kind: String, val name: String, val mode: String)
 data class CommandResult(val code: Int, val output: String)
 data class SourceEntry(val path: String, val directory: Boolean)
+data class BrowserEntry(val path: String, val name: String, val type: String, val size: Long, val modified: Long)
 
 /** All paths are constructed from a strict imported-name allowlist and shell-quoted before use. */
 class RootExecutor {
     private val base = "/data/adb/root_executor"
+    val managedRoot: String get() = base
     fun quote(s: String) = "'" + s.replace("'", "'\\''") + "'"
 
     fun run(command: String, onOutput: (String) -> Unit = {}): CommandResult {
@@ -56,6 +58,89 @@ class RootExecutor {
                 decode(rows.getOrElse(1) { "" }).map { SourceEntry(it, false) }
         return result to entries
     }
+
+    /** List one directory without losing filenames that contain spaces or punctuation. */
+    fun browse(path: String): Pair<CommandResult, List<BrowserEntry>> {
+        require(validPath(path)) { "目录路径无效" }
+        val result = run("""
+            set -eu
+            d=${quote(path)}
+            [ -d "${'$'}d" ] && [ -r "${'$'}d" ] || { echo '目录不存在或不可读取'; exit 45; }
+            find "${'$'}d" -mindepth 1 -maxdepth 1 -type d -print0 | base64 | tr -d '\n'
+            printf '\n'
+            find "${'$'}d" -mindepth 1 -maxdepth 1 -type f -print0 | base64 | tr -d '\n'
+            printf '\n'
+            find "${'$'}d" -mindepth 1 -maxdepth 1 -type l -print0 | base64 | tr -d '\n'
+        """.trimIndent())
+        if (result.code != 0) return result to emptyList()
+        val types = listOf("d", "f", "l")
+        val entries = result.output.lineSequence().take(3).mapIndexedNotNull { index, line ->
+            if (line.isBlank()) return@mapIndexedNotNull null
+            try {
+                Base64.decode(line, Base64.DEFAULT).toString(Charsets.UTF_8).split('\u0000')
+                    .filter { it.isNotEmpty() }
+                    .mapNotNull { fullPath ->
+                        val name = fullPath.substringAfterLast('/')
+                        if (name.isBlank() || name == "." || name == "..") null
+                        else BrowserEntry(fullPath, name, types[index], 0L, 0L)
+                    }
+            } catch (_: Exception) { null }
+        }.flatten().sortedWith(compareBy<BrowserEntry> { it.type != "d" }.thenBy { it.name.lowercase() }).toList()
+        return result to entries
+    }
+
+    fun copyPath(source: String, destinationDirectory: String): CommandResult = transferPath("cp -R", source, destinationDirectory)
+    fun movePath(source: String, destinationDirectory: String): CommandResult = transferPath("mv", source, destinationDirectory)
+
+    private fun transferPath(command: String, source: String, destinationDirectory: String): CommandResult {
+        require(validPath(source) && validPath(destinationDirectory)) { "文件路径无效" }
+        require(source != "/" && source != destinationDirectory && !destinationDirectory.startsWith(source.trimEnd('/') + "/")) { "不能将目录复制到自身内部" }
+        return run("""
+            set -eu
+            s=${quote(source)}; d=${quote(destinationDirectory)}; n=${'$'}{s##*/}; target=${'$'}d/${'$'}n
+            [ -e "${'$'}s" ] || [ -L "${'$'}s" ] || { echo '源文件不存在'; exit 46; }
+            [ -d "${'$'}d" ] && [ -w "${'$'}d" ] || { echo '目标目录不可写'; exit 48; }
+            [ ! -e "${'$'}target" ] && [ ! -L "${'$'}target" ] || { echo '目标中已存在同名文件'; exit 49; }
+            $command -- "${'$'}s" "${'$'}d/"
+        """.trimIndent())
+    }
+
+    fun renamePath(path: String, newName: String): CommandResult {
+        require(validPath(path) && path != "/") { "文件路径无效" }
+        require(validLeafName(newName)) { "名称无效" }
+        val parent = path.substringBeforeLast('/', "").ifEmpty { "/" }
+        return run("""
+            set -eu
+            s=${quote(path)}; d=${quote("${parent.trimEnd('/')}/$newName")}
+            [ -e "${'$'}s" ] || [ -L "${'$'}s" ] || { echo '文件不存在'; exit 46; }
+            [ ! -e "${'$'}d" ] && [ ! -L "${'$'}d" ] || { echo '目标名称已存在'; exit 49; }
+            mv -- "${'$'}s" "${'$'}d"
+        """.trimIndent())
+    }
+
+    fun deletePath(path: String, recursive: Boolean): CommandResult {
+        require(validPath(path) && path != "/") { "不能删除根目录" }
+        val remove = if (recursive) "rm -rf --" else "rm -f --"
+        return run("""
+            set -eu
+            p=${quote(path)}
+            [ -e "${'$'}p" ] || [ -L "${'$'}p" ] || { echo '文件不存在'; exit 46; }
+            $remove "${'$'}p"
+        """.trimIndent())
+    }
+
+    fun makeDirectory(parent: String, name: String): CommandResult {
+        require(validPath(parent) && validLeafName(name)) { "目录名称或路径无效" }
+        return run("""
+            set -eu
+            d=${quote(parent)}; target=${quote("${parent.trimEnd('/')}/$name")}
+            [ -d "${'$'}d" ] && [ -w "${'$'}d" ] || { echo '当前目录不可写'; exit 48; }
+            mkdir -- "${'$'}target"
+        """.trimIndent())
+    }
+
+    private fun validPath(path: String) = path.startsWith('/') && !path.contains('\u0000') && path.split('/').none { it == ".." }
+    private fun validLeafName(name: String) = name.isNotBlank() && name !in setOf(".", "..") && !name.contains('/') && !name.contains('\u0000')
 
     fun importSource(sourcePath: String, originalName: String, kind: String): CommandResult {
         require(kind == "scripts" || kind == "binaries")

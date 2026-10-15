@@ -9,6 +9,8 @@ enum class ExecutionMode(val key: String, val label: String) {
 }
 
 interface ExecutionSession {
+    val inputReady: Boolean
+        get() = true
     fun run(file: ManagedFile, output: (String) -> Unit): Int
     fun send(text: String)
     fun resize(cols: Int, rows: Int) {}

@@ -25,6 +25,7 @@ object SessionState {
     @Volatile var status = "终端已就绪"
     @Volatile var title = "交互终端"
     @Volatile var mode = ExecutionMode.PIPE
+    @Volatile var exitCode: Int? = null
     @Volatile var cols = 80
     @Volatile var rows = 24
     @Synchronized fun output(text: String) {
@@ -53,6 +54,7 @@ class ExecutionService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
     private val input = Executors.newSingleThreadExecutor()
     @Volatile private var session: ExecutionSession? = null
+    val sessionReady: Boolean get() = session?.inputReady == true && SessionState.running
     @Volatile private var stopping = false
     private var wake: PowerManager.WakeLock? = null
     private val main = Handler(Looper.getMainLooper())
@@ -69,11 +71,13 @@ class ExecutionService : Service() {
         if (SessionState.running || intent == null) return START_NOT_STICKY
         val kind = intent.getStringExtra("kind") ?: return START_NOT_STICKY
         val name = intent.getStringExtra("name") ?: return START_NOT_STICKY
+        val inputSteps = intent.getStringArrayListExtra("inputSteps")?.toList() ?: emptyList()
         val mode = ExecutionMode.fromKey(intent.getStringExtra("mode") ?: getSharedPreferences("settings", MODE_PRIVATE).getString("executionMode", "pipe"))
         SessionState.clear()
         SessionState.running = true
         SessionState.title = name
         SessionState.mode = mode
+        SessionState.exitCode = null
         SessionState.status = "正在运行 · ${mode.label}"
         stopping = false
         val manager = getSystemService(NotificationManager::class.java)
@@ -103,10 +107,12 @@ class ExecutionService : Service() {
                     callback("\u001b[36m[tubing] 执行方式：${mode.label}\u001b[0m\r\n")
                     if (mode == ExecutionMode.PIPE) callback("[输入提示] 输入后按回车提交；方向键菜单请选择 PTY。\r\n")
                     val code = terminal.run(ManagedFile(kind, name, ""), callback)
+                    SessionState.exitCode = code
                     SessionState.status = if (stopping) "已终止" else "已结束 · 退出码 $code"
                     callback("\r\n[tubing] ${SessionState.status}\r\n")
                 }
             } catch (e: Throwable) {
+                SessionState.exitCode = null
                 SessionState.status = if (stopping) "已终止" else "执行失败"
                 val error = "\r\n${SessionState.status}：${e.message}\r\n"
                 SessionState.output(error)
@@ -131,11 +137,42 @@ class ExecutionService : Service() {
                 }
             }
         }
+        if (inputSteps.isNotEmpty()) sendSequence(inputSteps)
         return START_NOT_STICKY
     }
     fun send(text: String) {
         if (!SessionState.running || input.isShutdown) return
         input.execute { try { session?.send(text) } catch (e: Exception) { SessionState.output("\r\n输入失败：${e.message}\r\n") } }
+    }
+    fun sendSequence(values: List<String>) {
+        if (!SessionState.running || input.isShutdown || values.isEmpty()) return
+        input.execute {
+            try {
+                val deadline = SystemClock.elapsedRealtime() + 15_000
+                while (SessionState.running && !stopping && !sessionReady && SystemClock.elapsedRealtime() < deadline) {
+                    Thread.sleep(50)
+                }
+                if (!SessionState.running || stopping) return@execute
+                check(sessionReady) { "等待脚本输入通道超时" }
+                SessionState.output("\r\n[快捷方式] 已加载 ${values.size} 项输入，准备自动提交。\r\n")
+                Thread.sleep(1_500)
+                values.forEachIndexed { index, value ->
+                    if (!SessionState.running || stopping) return@execute
+                    val current = session
+                    if (current?.inputReady != true) {
+                        SessionState.output("\r\n[快捷方式] 输入通道未就绪，已停止发送后续输入。\r\n")
+                        return@execute
+                    }
+                    current.send(value + "\r")
+                    SessionState.output("\r\n[快捷方式] 已提交输入 ${index + 1}/${values.size}\r\n")
+                    if (index + 1 < values.size) Thread.sleep(900)
+                }
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (e: Exception) {
+                SessionState.output("\r\n输入方案发送失败：${e.message}\r\n")
+            }
+        }
     }
     fun resize(cols: Int, rows: Int) { session?.resize(cols, rows) }
     fun terminate() {
