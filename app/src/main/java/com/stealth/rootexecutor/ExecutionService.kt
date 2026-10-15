@@ -39,7 +39,10 @@ object SessionState {
         observers.add(listener); listener(history.toString())
     }
     @Synchronized fun unsubscribe(listener: (String) -> Unit) { observers.remove(listener) }
-    @Synchronized fun clear() { if (!running) { history.clear(); pending.clear(); main.removeCallbacks(flush); scheduled = false } }
+    @Synchronized fun clearOutput() {
+        history.clear(); pending.clear(); main.removeCallbacks(flush); scheduled = false
+    }
+    @Synchronized fun clear() { if (!running) clearOutput() }
 }
 
 class ExecutionService : Service() {

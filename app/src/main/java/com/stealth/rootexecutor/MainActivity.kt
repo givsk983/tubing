@@ -8,6 +8,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -70,7 +71,10 @@ class MainActivity : Activity() {
     private fun button(label: String, action: () -> Unit) = Button(this).apply {
         text = label; isAllCaps = false; setTextColor(accent); textSize = 13f
         backgroundTintList = android.content.res.ColorStateList.valueOf(panel)
-        background = GradientDrawable().apply { setColor(panel); cornerRadius = dp(10).toFloat(); setStroke(dp(1), if (dark) Color.rgb(31, 48, 66) else Color.rgb(209, 223, 231)) }
+        background = InsetDrawable(GradientDrawable().apply {
+            setColor(panel); cornerRadius = dp(10).toFloat()
+            setStroke(dp(1), if (dark) Color.rgb(61, 83, 105) else Color.rgb(171, 192, 207))
+        }, dp(3))
         setOnClickListener { action() }
     }
     private fun base(): LinearLayout {
@@ -158,8 +162,13 @@ class MainActivity : Activity() {
         (web.parent as? ViewGroup)?.removeView(web)
         area.addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
         val keys = LinearLayout(this)
-        listOf("中断" to "\u0003", "结束输入" to "\u0004", "制表" to "\t", "退出键" to "\u001b", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C", "回车" to "\r").forEach { (label, value) ->
-            keys.addView(button(label) { web.evaluateJavascript("window.key(${JSONObject.quote(value)})", null) }, LinearLayout.LayoutParams(dp(62), dp(46)))
+        listOf("中断" to "\u0003", "清屏" to "", "结束输入" to "\u0004", "制表" to "\t", "退出键" to "\u001b", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C", "回车" to "\r").forEach { (label, value) ->
+            keys.addView(button(label) {
+                if (label == "清屏") {
+                    SessionState.clearOutput()
+                    web.evaluateJavascript("term.clear()", null)
+                } else web.evaluateJavascript("window.key(${JSONObject.quote(value)})", null)
+            }.apply { isSingleLine = true }, LinearLayout.LayoutParams(dp(78), dp(46)))
         }
         area.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(keys) }); content.addView(area, FrameLayout.LayoutParams(-1, -1))
     }

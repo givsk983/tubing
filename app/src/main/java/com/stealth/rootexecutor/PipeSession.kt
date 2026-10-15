@@ -24,12 +24,29 @@ class PipeSession(
             eof = { child.outputStream.close() }
         )
         try {
-            child.inputStream.reader(Charsets.UTF_8).use { reader ->
-                val chars = CharArray(4096)
-                while (true) { val count = reader.read(chars); if (count < 0) break; output(String(chars, 0, count)) }
+            // Drain output concurrently with waiting for the command. Waiting for EOF first can
+            // hang forever when a script leaves a background process holding the inherited pipe.
+            val reader = Thread {
+                child.inputStream.reader(Charsets.UTF_8).use { stream ->
+                    val chars = CharArray(4096)
+                    while (true) {
+                        val count = stream.read(chars)
+                        if (count < 0) break
+                        output(String(chars, 0, count))
+                    }
+                }
+            }.apply { name = "tubing-pipe-output"; isDaemon = true; start() }
+
+            val code = child.waitFor()
+            // A descendant can inherit stdout after the command has exited. Give buffered output
+            // a moment to drain, then close our side so that the session can finish promptly.
+            reader.join(250)
+            if (reader.isAlive) {
+                runCatching { child.inputStream.close() }
+                reader.join(1_000)
             }
-            return child.waitFor()
-        } finally { input = null; runCatching { child.outputStream.close() } }
+            return code
+        } finally { input = null; runCatching { child.outputStream.close() }; runCatching { child.inputStream.close() } }
     }
 
     override fun send(text: String) { if (!stopped.get()) input?.accept(text) }
