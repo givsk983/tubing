@@ -141,24 +141,11 @@ class MainActivity : Activity() {
     private fun executionPage() {
         val area = column()
         val actions = LinearLayout(this)
-        actions.addView(button("导入文件") { AlertDialog.Builder(this).setTitle("导入文件").setItems(arrayOf("SH 脚本", "ELF 二进制")) { _, i ->
-            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, 100 + i)
+        actions.addView(button("导入文件") { AlertDialog.Builder(this).setTitle("导入文件").setItems(arrayOf("SH 脚本（系统文件选择器）", "ELF 二进制（系统文件选择器）", "从同步路径导入")) { _, i ->
+            if (i == 2) chooseSyncSource() else
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, 100 + i)
         }.show() }, LinearLayout.LayoutParams(0, -2, 1f))
         actions.addView(button("选择文件") { chooseFile() }, LinearLayout.LayoutParams(0, -2, 1f)); area.addView(actions)
-        val syncHeader = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        syncHeader.addView(text("同步路径", 14f, accent), LinearLayout.LayoutParams(0, -2, 1f))
-        syncHeader.addView(button("管理") { manageSyncSources() })
-        area.addView(syncHeader)
-        val sourceButtons = LinearLayout(this)
-        syncSources().forEachIndexed { index, source ->
-            sourceButtons.addView(button(source.label) { syncSource(source.path) }.apply {
-                setOnLongClickListener { editSyncSource(index); true }
-            }, LinearLayout.LayoutParams(-2, dp(48)).apply { marginEnd = dp(8) })
-        }
-        area.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(sourceButtons)
-        })
         val controls = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         controls.addView(text(if (SessionState.running) SessionState.title else selected?.name ?: "选择文件后开始执行", 12f), LinearLayout.LayoutParams(0, -2, 1f))
         controls.addView(button("执行") { launch() })
@@ -202,6 +189,15 @@ class MainActivity : Activity() {
             .setItems(labels) { _, index -> editSyncSource(index) }
             .setPositiveButton("新增路径") { _, _ -> editSyncSource(null) }
             .setNegativeButton("关闭", null).show()
+    }
+
+    private fun chooseSyncSource() {
+        val sources = syncSources()
+        val labels = sources.map { "${it.label}  ·  ${it.path}" }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("选择同步路径")
+            .setItems(labels) { _, index -> syncSource(sources[index].path) }
+            .setPositiveButton("管理路径") { _, _ -> manageSyncSources() }
+            .setNegativeButton("取消", null).show()
     }
 
     private fun editSyncSource(index: Int?) {
