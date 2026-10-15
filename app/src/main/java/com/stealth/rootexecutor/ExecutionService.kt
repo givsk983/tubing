@@ -24,6 +24,7 @@ object SessionState {
     @Volatile var running = false
     @Volatile var status = "终端已就绪"
     @Volatile var title = "交互终端"
+    @Volatile var mode = ExecutionMode.PIPE
     @Volatile var cols = 80
     @Volatile var rows = 24
     @Synchronized fun output(text: String) {
@@ -48,7 +49,7 @@ class ExecutionService : Service() {
     }
     private val executor = Executors.newSingleThreadExecutor()
     private val input = Executors.newSingleThreadExecutor()
-    @Volatile private var session: PtySession? = null
+    @Volatile private var session: ExecutionSession? = null
     @Volatile private var stopping = false
     private var wake: PowerManager.WakeLock? = null
     private val main = Handler(Looper.getMainLooper())
@@ -65,17 +66,19 @@ class ExecutionService : Service() {
         if (SessionState.running || intent == null) return START_NOT_STICKY
         val kind = intent.getStringExtra("kind") ?: return START_NOT_STICKY
         val name = intent.getStringExtra("name") ?: return START_NOT_STICKY
+        val mode = ExecutionMode.fromKey(intent.getStringExtra("mode") ?: getSharedPreferences("settings", MODE_PRIVATE).getString("executionMode", "pipe"))
         SessionState.clear()
         SessionState.running = true
         SessionState.title = name
-        SessionState.status = "正在运行"
+        SessionState.mode = mode
+        SessionState.status = "正在运行 · ${mode.label}"
         stopping = false
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("execution", "脚本执行", NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val stop = PendingIntent.getService(this, 1, Intent(this, ExecutionService::class.java).setAction(STOP), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val notification = Notification.Builder(this, "execution").setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle("tubing · 正在执行").setContentText(name).setContentIntent(open).setOngoing(true)
+            .setContentTitle("tubing · ${mode.label}执行中").setContentText(name).setContentIntent(open).setOngoing(true)
             .addAction(Notification.Action.Builder(null, "终止执行", stop).build()).build()
         startForeground(7, notification)
         val lease = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tubing:execution").apply { setReferenceCounted(false) }
@@ -86,12 +89,16 @@ class ExecutionService : Service() {
             try {
                 lease.acquire(10 * 60_000L)
                 main.postDelayed(renewWake, 5 * 60_000L)
-                val terminal = PtySession(root, token)
+                val terminal: ExecutionSession = when (mode) {
+                    ExecutionMode.PIPE -> PipeSession(root, token)
+                    ExecutionMode.PTY -> PtySession(root, token)
+                }
                 session = terminal
                 log.bufferedWriter().use { writer ->
                     val callback: (String) -> Unit = { text -> synchronized(writer) { writer.write(text); writer.flush() }; SessionState.output(text) }
                     if (stopping) error("执行已取消")
-                    callback("\u001b[36m[tubing] 已连接交互终端\u001b[0m\r\n")
+                    callback("\u001b[36m[tubing] 执行方式：${mode.label}\u001b[0m\r\n")
+                    if (mode == ExecutionMode.PIPE) callback("[输入提示] 输入后按回车提交；方向键菜单请选择 PTY。\r\n")
                     val code = terminal.run(ManagedFile(kind, name, ""), callback)
                     SessionState.status = if (stopping) "已终止" else "已结束 · 退出码 $code"
                     callback("\r\n[tubing] ${SessionState.status}\r\n")
@@ -117,16 +124,19 @@ class ExecutionService : Service() {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     SessionState.running = false
                     SessionState.output("")
-                    stopSelfResult(startId)
+                    stopSelf()
                 }
             }
         }
         return START_NOT_STICKY
     }
-    fun send(text: String) { input.execute { session?.send(text) } }
+    fun send(text: String) {
+        if (!SessionState.running || input.isShutdown) return
+        input.execute { try { session?.send(text) } catch (e: Exception) { SessionState.output("\r\n输入失败：${e.message}\r\n") } }
+    }
     fun resize(cols: Int, rows: Int) { session?.resize(cols, rows) }
     fun terminate() {
-        if (stopping) return
+        if (stopping || !SessionState.running) return
         stopping = true
         SessionState.status = "正在终止"
         Thread { session?.stop() }.start()

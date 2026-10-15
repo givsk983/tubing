@@ -4,6 +4,6 @@ const term=new Terminal({cursorBlink:true,convertEol:false,scrollback:5000,fontS
 term.open(document.getElementById('terminal'));
 term.onData(data=>Android.send(data));
 function fit(){const cell=term._core._renderService.dimensions.css.cell;if(!cell.width||!cell.height)return;const cols=Math.max(10,Math.floor((innerWidth-16)/cell.width));const rows=Math.max(2,Math.floor((innerHeight-16)/cell.height));term.resize(cols,rows);Android.resize(cols,rows)}
-window.feed=text=>term.write(text);window.setSize=size=>{term.options.fontSize=size;setTimeout(fit,0)};window.key=data=>{Android.send(data);term.focus()};
+window.feed=text=>term.write(text);window.setMode=mode=>{term.options.convertEol=mode==='pipe'};window.setSize=size=>{term.options.fontSize=size;setTimeout(fit,0)};window.key=data=>{Android.send(data);term.focus()};
 new ResizeObserver(fit).observe(document.getElementById('terminal'));document.getElementById('terminal').addEventListener('click',()=>term.focus());setTimeout(()=>{fit();Android.ready()},100);
 </script></body></html>

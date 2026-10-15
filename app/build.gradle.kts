@@ -11,8 +11,8 @@ android {
         applicationId = "com.stealth.rootexecutor"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2.0"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -25,4 +25,5 @@ android {
 
 dependencies {
     implementation("net.java.dev.jna:jna:5.15.0@aar")
+    testImplementation("junit:junit:4.13.2")
 }

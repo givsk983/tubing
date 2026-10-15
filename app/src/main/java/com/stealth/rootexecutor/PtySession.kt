@@ -10,7 +10,7 @@ import java.io.InputStreamReader
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Bionic allocates the PTY; the separate su process opens its slave after setsid. */
-class PtySession(private val root: RootExecutor, private val token: String) {
+class PtySession(private val root: RootExecutor, private val token: String) : ExecutionSession {
     interface LibC : Library {
         fun open(path: String, flags: Int): Int
         fun grantpt(fd: Int): Int
@@ -27,7 +27,7 @@ class PtySession(private val root: RootExecutor, private val token: String) {
     @Volatile private var process: Process? = null
     private val stopOnce = AtomicBoolean(false)
 
-    fun run(file: ManagedFile, output: (String) -> Unit): Int {
+    override fun run(file: ManagedFile, output: (String) -> Unit): Int {
         check(!closed) { "执行已取消" }
         fd = libc.open("/dev/ptmx", 2 or 0x100 or 0x800 or 0x80000)
         check(fd >= 0) { "无法创建 PTY（错误 ${Native.getLastError()}），请检查 SELinux 限制" }
@@ -70,7 +70,7 @@ class PtySession(private val root: RootExecutor, private val token: String) {
         } finally { closeMaster() }
     }
 
-    @Synchronized fun send(text: String) {
+    @Synchronized override fun send(text: String) {
         if (fd < 0 || closed) return
         val bytes = text.toByteArray(Charsets.UTF_8)
         var offset = 0
@@ -81,13 +81,13 @@ class PtySession(private val root: RootExecutor, private val token: String) {
         }
     }
 
-    @Synchronized fun resize(cols: Int, rows: Int) {
+    @Synchronized override fun resize(cols: Int, rows: Int) {
         if (fd < 0 || closed) return
         val size = Memory(8).apply { clear(); setShort(0, rows.coerceIn(2, 500).toShort()); setShort(2, cols.coerceIn(10, 500).toShort()) }
         libc.ioctl(fd, NativeLong(0x5414), size)
     }
 
-    fun stop() {
+    override fun stop() {
         if (!stopOnce.compareAndSet(false, true)) return
         closed = true
         root.stopSession(token)

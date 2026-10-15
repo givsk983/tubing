@@ -28,12 +28,22 @@
 - `PtySession` uses the Android JNA AAR to call Bionic PTY functions. A separate `su` process runs `setsid -w`, opens the slave terminal and launches the selected file after checking permissions. No fork occurs inside the JVM and there is no nested `su`.
 - Bundled xterm.js 5.5.0 renders ANSI sequences and sends keyboard/IME input through a local WebView bridge. It also reports terminal dimensions. Assets and the MIT license are bundled for offline use.
 - `ExecutionService` owns execution independently from Activity, returns `START_NOT_STICKY`, uses a special-use foreground notification and a renewable, time-limited partial wake lock. Changing tabs, themes or moving to the background does not terminate the session. Task dismissal calls process-group termination and closes the PTY.
-- Captured output is streamed to an app-private temporary file, then copied into the root log directory if enabled. UI history and queued output are bounded. Password echo follows the script's terminal settings; scripts must use `stty -echo` when appropriate.
+- Captured output is streamed to an app-private temporary file, then copied into the root log directory if enabled. UI history and queued output are bounded. In PTY mode, password echo follows the script's terminal settings; scripts must use `stty -echo` when appropriate.
 - A force-stop, power loss, OEM process killer, or intentionally daemonized child cannot be treated as a guaranteed task-dismiss callback. These behaviors require device validation.
 - PTY and Root-policy failures are shown in the terminal rather than silently falling back to pipes.
 - Reference for wait/status behavior: [Android Toybox setsid source](https://android.googlesource.com/platform/external/toybox/+/40d21c59f76a9388b0ebb5c4c706732c2d034a67/toys/other/setsid.c).
 
 ## Build
+
+### Execution modes (1.2.0)
+
+- `ExecutionMode` centralizes preference keys and labels. Missing or invalid preferences default to `PIPE`, including upgrades from the previous PTY-only version.
+- The execution page and settings page share the persisted mode selector. The chosen mode is passed in the start intent and captured by the service for the entire session. Changes during a run apply to the next run.
+- `ExecutionSession` abstracts PTY and pipe backends. `PipeSession` uses a genuine stdin/stdout pipe and chunk-based UTF-8 readers, so prompts without newlines are visible immediately. This backend does not allocate a PTY or load JNA. Program-side buffering can still delay output.
+- `PipeInput` provides local line editing/echo, CR/LF normalization, Unicode submission, Ctrl+C process-group signaling, and Ctrl+D stdin closure. Pipe mode submits input on Enter; raw key/full-screen terminal programs should use PTY. Pipe mode cannot honor terminal password-echo controls.
+- Both backends share Root validation, chmod verification, execution restriction checks, log storage, foreground lifetime and process-group cleanup. A cancellation marker covers termination racing with session startup.
+- xterm rendering uses LF-to-CRLF conversion for pipe output while preserving normal PTY behavior.
+- JVM tests cover default mode, safety guards, input editing/control keys and real child-process streaming/input/exit status. Root/SELinux and device lifecycle behavior still require Android testing.
 
 Open this directory in Android Studio with Android SDK 35 installed, or run `gradlew.bat assembleDebug` with JDK 17+. The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. Root authorization is requested the first time the app checks its managed directory.
 
