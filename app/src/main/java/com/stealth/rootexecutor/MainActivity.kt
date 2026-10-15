@@ -1289,8 +1289,18 @@ class MainActivity : Activity() {
             if (SessionState.running) message("暂时无法清理", "请在执行结束后清理临时文件。")
             else work({ root.cleanTmp() }) { message("清理临时文件", if (it.code == 0) "清理完成" else it.output) }
         })
+        area.addView(text("反馈与项目", 13f, accent))
+        area.addView(button("反馈频道 · Telegram") { openExternalLink("https://t.me/mbazhuan") })
+        area.addView(button("GitHub 仓库") { openExternalLink("https://github.com/yunhe4550-design/Tubing") })
         area.addView(text("tubing ${packageManager.getPackageInfo(packageName, 0).versionName}\nRoot 交互终端", 12f))
         content.addView(ScrollView(this).apply { addView(area) }, FrameLayout.LayoutParams(-1, -1))
+    }
+    private fun openExternalLink(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: Exception) {
+            message("无法打开链接", "请确认设备上有可用的浏览器或应用。")
+        }
     }
     @Deprecated("SAF result")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
