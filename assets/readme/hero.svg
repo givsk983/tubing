@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">tubing Android Root 执行控制台</title>
+  <desc id="desc">tubing 将脚本与 ELF 文件通过 Root 授权、Pipe 或 PTY 会话接入交互终端，并管理日志与生命周期。</desc>
+
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1822"/>
+      <stop offset="1" stop-color="#0a1119"/>
+    </linearGradient>
+    <clipPath id="terminal-clip">
+      <rect x="700" y="54" width="438" height="312" rx="18"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1200" height="420" rx="28" fill="#081018"/>
+  <path d="M0 314 C174 314 184 372 340 372 H1200" fill="none" stroke="#102631" stroke-width="2"/>
+  <path d="M0 326 C174 326 184 384 340 384 H1200" fill="none" stroke="#28b9cf" stroke-opacity="0.24" stroke-width="2"/>
+
+  <g transform="translate(62 54)">
+    <g transform="translate(0 2)">
+      <rect width="48" height="48" rx="10" fill="#0a151e" stroke="#28b9cf" stroke-width="2"/>
+      <path d="M12 14 L23 24 L12 34 M28 34 H38" fill="none" stroke="#28b9cf" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="68" y="18" fill="#28b9cf" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="700" letter-spacing="2">ANDROID ROOT EXECUTION CONSOLE</text>
+    <text x="68" y="51" fill="#91a7b5" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">Rooted Android · Kotlin · local-first</text>
+
+    <text x="0" y="142" fill="#eef8fc" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="76" font-weight="760" letter-spacing="-2">tubing</text>
+    <rect x="4" y="160" width="72" height="5" rx="2.5" fill="#28b9cf"/>
+    <text x="0" y="211" fill="#dceaf1" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="27" font-weight="650">把脚本、ELF 与交互终端</text>
+    <text x="0" y="250" fill="#dceaf1" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="27" font-weight="650">接入一条可管理的 Root 执行管道</text>
+
+    <g transform="translate(0 286)" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="650">
+      <rect width="136" height="40" rx="20" fill="#10242d" stroke="#235665"/>
+      <text x="68" y="26" text-anchor="middle" fill="#9ee9f4">ANDROID 8+</text>
+      <rect x="148" width="134" height="40" rx="20" fill="#10242d" stroke="#235665"/>
+      <text x="215" y="26" text-anchor="middle" fill="#9ee9f4">PIPE + PTY</text>
+      <rect x="294" width="158" height="40" rx="20" fill="#10242d" stroke="#235665"/>
+      <text x="373" y="26" text-anchor="middle" fill="#9ee9f4">v1.3.0 TEST</text>
+    </g>
+  </g>
+
+  <g clip-path="url(#terminal-clip)">
+    <rect x="700" y="54" width="438" height="312" rx="18" fill="url(#panel)" stroke="#28404d" stroke-width="2"/>
+    <rect x="700" y="54" width="438" height="48" fill="#111f2a"/>
+    <circle cx="728" cy="78" r="6" fill="#28b9cf"/>
+    <circle cx="750" cy="78" r="6" fill="#35505e"/>
+    <circle cx="772" cy="78" r="6" fill="#35505e"/>
+    <text x="918" y="84" text-anchor="middle" fill="#90a7b4" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">tubing / session</text>
+
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+      <text x="730" y="142" fill="#28b9cf" font-size="20">$</text>
+      <text x="756" y="142" fill="#e7f3f8" font-size="20">select task.sh</text>
+      <text x="730" y="180" fill="#91a7b5" font-size="18">ROOT GATE</text>
+      <line x1="852" y1="174" x2="930" y2="174" stroke="#35505e" stroke-width="2"/>
+      <circle cx="948" cy="174" r="9" fill="#28b9cf"/>
+      <text x="971" y="180" fill="#9ee9f4" font-size="18">GRANTED</text>
+
+      <g transform="translate(730 210)">
+        <rect width="154" height="48" rx="10" fill="#122833" stroke="#28b9cf"/>
+        <text x="77" y="30" text-anchor="middle" fill="#dff6fa" font-size="19" font-weight="700">PIPE</text>
+        <path d="M154 24 H188" stroke="#28b9cf" stroke-width="4" stroke-linecap="round"/>
+        <rect x="188" width="154" height="48" rx="10" fill="#122833" stroke="#28b9cf"/>
+        <text x="265" y="30" text-anchor="middle" fill="#dff6fa" font-size="19" font-weight="700">PTY</text>
+      </g>
+
+      <text x="730" y="301" fill="#91a7b5" font-size="18">[SELinux] Enforcing</text>
+      <text x="730" y="333" fill="#28b9cf" font-size="18">[退出码] 0</text>
+      <rect x="864" y="318" width="10" height="18" rx="2" fill="#28b9cf"/>
+    </g>
+  </g>
+
+  <path d="M659 100 V320" stroke="#18313b" stroke-width="2"/>
+  <circle cx="659" cy="100" r="5" fill="#28b9cf"/>
+  <circle cx="659" cy="320" r="5" fill="#28b9cf"/>
+</svg>

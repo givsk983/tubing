@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="390" viewBox="0 0 1200 390" role="img" aria-labelledby="title desc">
+  <title id="title">tubing 执行流程</title>
+  <desc id="desc">文件导入后经过路径与文件检查，再进入 Root 会话，选择 Pipe 或 PTY 运行，最后输出到终端并按设置保存日志。</desc>
+
+  <rect width="1200" height="390" rx="26" fill="#081018"/>
+  <text x="58" y="62" fill="#eef8fc" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="36" font-weight="720">一次执行如何流动</text>
+  <text x="58" y="94" fill="#91a7b5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18">IMPORT → VERIFY → SESSION → OUTPUT</text>
+
+  <path d="M143 208 H1057" fill="none" stroke="#17313d" stroke-width="16" stroke-linecap="round"/>
+  <path d="M143 208 H1057" fill="none" stroke="#28b9cf" stroke-width="3" stroke-linecap="round"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif">
+    <g transform="translate(58 135)">
+      <rect width="230" height="146" rx="18" fill="#0f1d27" stroke="#2b4654" stroke-width="2"/>
+      <circle cx="40" cy="40" r="18" fill="#28b9cf"/>
+      <text x="40" y="47" text-anchor="middle" fill="#071219" font-size="21" font-weight="800">1</text>
+      <text x="72" y="48" fill="#eef8fc" font-size="25" font-weight="720">导入</text>
+      <text x="24" y="88" fill="#b9cbd4" font-size="19">SH 脚本 / ELF 文件</text>
+      <text x="24" y="119" fill="#91a7b5" font-size="18">SAF 或同步路径</text>
+    </g>
+
+    <g transform="translate(342 135)">
+      <rect width="230" height="146" rx="18" fill="#0f1d27" stroke="#2b4654" stroke-width="2"/>
+      <circle cx="40" cy="40" r="18" fill="#28b9cf"/>
+      <text x="40" y="47" text-anchor="middle" fill="#071219" font-size="21" font-weight="800">2</text>
+      <text x="72" y="48" fill="#eef8fc" font-size="25" font-weight="720">校验</text>
+      <text x="24" y="88" fill="#b9cbd4" font-size="19">常规文件 · 非符号链接</text>
+      <text x="24" y="119" fill="#91a7b5" font-size="18">权限 / noexec / ELF 魔数</text>
+    </g>
+
+    <g transform="translate(626 135)">
+      <rect width="230" height="146" rx="18" fill="#0f1d27" stroke="#2b4654" stroke-width="2"/>
+      <circle cx="40" cy="40" r="18" fill="#28b9cf"/>
+      <text x="40" y="47" text-anchor="middle" fill="#071219" font-size="21" font-weight="800">3</text>
+      <text x="72" y="48" fill="#eef8fc" font-size="25" font-weight="720">会话</text>
+      <text x="24" y="88" fill="#b9cbd4" font-size="19">Root + 独立进程组</text>
+      <text x="24" y="119" fill="#91a7b5" font-size="18">Pipe 或 PTY</text>
+    </g>
+
+    <g transform="translate(910 135)">
+      <rect width="230" height="146" rx="18" fill="#0f1d27" stroke="#2b4654" stroke-width="2"/>
+      <circle cx="40" cy="40" r="18" fill="#28b9cf"/>
+      <text x="40" y="47" text-anchor="middle" fill="#071219" font-size="21" font-weight="800">4</text>
+      <text x="72" y="48" fill="#eef8fc" font-size="25" font-weight="720">输出</text>
+      <text x="24" y="88" fill="#b9cbd4" font-size="19">xterm.js 实时终端</text>
+      <text x="24" y="119" fill="#91a7b5" font-size="18">退出码 / 可选日志</text>
+    </g>
+  </g>
+
+  <g transform="translate(58 322)" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">
+    <text fill="#28b9cf" font-weight="700">LIFECYCLE</text>
+    <text x="118" fill="#91a7b5">前台服务维持会话 · 任务划走时终止进程组 · 临时输出有界</text>
+  </g>
+</svg>

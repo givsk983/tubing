@@ -18,7 +18,7 @@
 3. Add SAF import, validation, collision-safe naming, permissions and per-run checks. **Done**
 4. Add Root authorization gate, execution / file management / settings navigation, system / dark / light themes, font size, and optional saved logs. **Implemented**
 5. Add PTY terminal input and streaming output, foreground service, wake lock renewal, and process group termination on task dismissal. **Implemented; rooted device validation pending**
-6. File management navigation currently shows a placeholder, as requested; full management UI is deferred. Imports and file selection remain available in the execution page.
+6. File management provides a dual-pane browser for managed files and device storage, with navigation, favorites, copy, rename, delete, and directory creation. Imports and execution selection remain available from the execution page.
 7. Validate Magisk/SU variants, keyboards, screen lock, task dismissal, SELinux enforcing behavior and `noexec` restrictions on rooted devices. **Pending device validation**
 
 ## Interactive session (1.1)
