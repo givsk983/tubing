@@ -47,6 +47,8 @@ class MainActivity : Activity() {
     private var shortcutButton: Button? = null
     private var interfaceModeBar: LinearLayout? = null
     private var interfaceModeButton: Button? = null
+    private var managePresetsButton: Button? = null
+    private var keyBarToggle: Button? = null
     private var executionKeyBar: FrameLayout? = null
     private var inputHistoryButton: Button? = null
     private var inputMemoryButton: Button? = null
@@ -188,11 +190,20 @@ class MainActivity : Activity() {
         }
         interfaceModeBar = LinearLayout(this).apply {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            managePresetsButton = button("管理方案") { showInputPresets() }
+            addView(managePresetsButton, LinearLayout.LayoutParams(-2, dp(42)))
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 1, 1f))
+            keyBarToggle = button("") {
+                val collapsed = !prefs.getBoolean("executionKeysCollapsed", false)
+                prefs.edit().putBoolean("executionKeysCollapsed", collapsed).apply()
+                updateExecutionKeysVisibility()
+            }.apply { textSize = 12f }
+            addView(keyBarToggle, LinearLayout.LayoutParams(-2, dp(42)))
             addView(interfaceModeButton, LinearLayout.LayoutParams(-2, dp(36)))
         }
-        page.addView(interfaceModeBar, LinearLayout.LayoutParams(-1, dp(44)))
         executionKeyBar = FrameLayout(this)
-        page.addView(executionKeyBar, LinearLayout.LayoutParams(-1, dp(46)))
+        page.addView(executionKeyBar, LinearLayout.LayoutParams(-1, -2))
+        page.addView(interfaceModeBar, LinearLayout.LayoutParams(-1, dp(44)))
         val nav = LinearLayout(this)
         listOf("文件执行", "文件管理", "设置").forEachIndexed { index, label ->
             nav.addView(button(label) { tab = index; showTab() }, LinearLayout.LayoutParams(0, dp(58), 1f))
@@ -207,7 +218,9 @@ class MainActivity : Activity() {
         val nav = page.getChildAt(page.childCount - 1) as LinearLayout
         nav.visibility = if (quick) View.INVISIBLE else View.VISIBLE
         executionKeyBar?.removeAllViews()
-        executionKeyBar?.visibility = if (tab != 0) View.GONE else if (quick) View.INVISIBLE else View.VISIBLE
+        managePresetsButton?.visibility = if (quick) View.GONE else View.VISIBLE
+        keyBarToggle?.visibility = if (quick) View.GONE else View.VISIBLE
+        updateExecutionKeysVisibility()
         interfaceModeBar?.visibility = if (tab == 0) View.VISIBLE else View.GONE
         interfaceModeButton?.text = interfaceModeLabel()
         val heading = page.getChildAt(0) as FrameLayout
@@ -215,8 +228,8 @@ class MainActivity : Activity() {
         startButton = heading.getChildAt(1) as Button
         shortcutButton = heading.getChildAt(2) as Button
         updateShortcutButton()
-        startButton?.visibility = if (tab == 0) View.VISIBLE else View.GONE
-        shortcutButton?.visibility = if (tab == 0) View.VISIBLE else View.GONE
+        startButton?.visibility = View.GONE
+        shortcutButton?.visibility = View.GONE
         for (i in 0..2) (nav.getChildAt(i) as Button).setTextColor(if (tab == i) accent else foreground)
         when (tab) {
             0 -> if (!quick) executionPage() else {
@@ -577,10 +590,8 @@ class MainActivity : Activity() {
         terminalStatus = text(SessionState.status, 12f, accent); area.addView(terminalStatus)
         val inputTools = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         inputHistoryButton = button("执行历史") { showInputHistory() }
-        val inputPresetButton = button("输入方案") { showInputPresets() }
         inputMemoryButton = button(inputMemoryLabel()) { configureInputMemory() }
         inputTools.addView(inputHistoryButton, LinearLayout.LayoutParams(0, dp(42), 1f))
-        inputTools.addView(inputPresetButton, LinearLayout.LayoutParams(0, dp(42), 1f))
         inputTools.addView(inputMemoryButton, LinearLayout.LayoutParams(0, dp(42), 1f))
         area.addView(inputTools)
         val web = terminal ?: createTerminal().also { terminal = it }
@@ -595,8 +606,18 @@ class MainActivity : Activity() {
                 } else web.evaluateJavascript("window.key(${JSONObject.quote(value)})", null)
             }.apply { isSingleLine = true }, LinearLayout.LayoutParams(dp(78), dp(46)))
         }
-        executionKeyBar?.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(keys) }, FrameLayout.LayoutParams(-1, -1))
+        executionKeyBar?.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(keys)
+        }, FrameLayout.LayoutParams(-1, dp(46)))
         content.addView(area, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    private fun updateExecutionKeysVisibility() {
+        val collapsed = prefs.getBoolean("executionKeysCollapsed", false)
+        executionKeyBar?.visibility = if (tab == 0 && !prefs.getBoolean("quickInterface", false) && !collapsed) View.VISIBLE else View.GONE
+        keyBarToggle?.text = if (collapsed) "展开按键 ▴" else "收起按键 ▾"
+        keyBarToggle?.contentDescription = if (collapsed) "向上展开终端快捷键" else "向下收起终端快捷键"
     }
 
     private fun showImportOptions() {
@@ -1311,7 +1332,7 @@ class MainActivity : Activity() {
     private fun showInputHistory() {
         val records = ExecutionHistory.read(this).asReversed()
         val dateFormat = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.getDefault())
-        styledDialog("执行历史", "最近 200 次 · 包含普通执行和快捷启动", { dialog ->
+        styledDialog("执行历史", "最近 ${ExecutionHistory.limit(this)} 次 · 包含普通执行和快捷启动", { dialog ->
             column().apply {
                 if (records.isEmpty()) addView(text("暂无执行记录。运行脚本后会自动记录，与输入记忆和日志开关无关。", 14f, mutedColor()))
                 records.forEach { record ->
@@ -1427,6 +1448,10 @@ class MainActivity : Activity() {
         styledDialog("输入方案", "为当前脚本保存和管理常用输入", { dialog ->
             column().apply {
                 addView(text(file.name, 13f, mutedColor()).apply { setPadding(dp(4), 0, dp(4), dp(14)) })
+                addView(button("切换脚本") {
+                    dialog.dismiss()
+                    chooseFile { showInputPresets() }
+                }, LinearLayout.LayoutParams(-1, dp(50)))
                 if (presets.isEmpty()) addView(text("还没有输入方案。新建方案后，可在运行时逐项确认发送。", 14f, mutedColor()))
                 presets.forEachIndexed { index, preset ->
                     addView(optionCard(preset.name, "${preset.steps.size} 项输入 · 点击查看操作") {
@@ -1622,12 +1647,12 @@ class MainActivity : Activity() {
     }
     private fun chooseMode() {
         val modes = ExecutionMode.entries
-        styledDialog("选择执行方式", if (SessionState.running) "当前会话保持不变，选择对下次执行生效" else "按脚本的交互需求选择", { dialog ->
+        styledDialog("选择执行方式", "", { dialog ->
             column().apply {
                 modes.forEach { mode ->
                     val pipe = mode == ExecutionMode.PIPE
                     addView(optionCard(if (pipe) "管道 · 默认" else "PTY 伪终端",
-                        if (pipe) "适合普通问答、逐行输入和批处理" else "适合终端菜单、方向键和单键交互", mode == preferredMode()) {
+                        "", mode == preferredMode()) {
                         prefs.edit().putString("executionMode", mode.key).apply()
                         dialog.dismiss(); showTab()
                     })
@@ -1649,13 +1674,18 @@ class MainActivity : Activity() {
         })
         val rememberByDefault = prefs.getBoolean("defaultRememberInput", false)
         area.addView(button("默认记忆输入 · ${if (rememberByDefault) "开" else "关"}") {
-            AlertDialog.Builder(this).setTitle("默认记忆输入")
-                .setMessage("此默认值用于没有单独设置过记忆输入的脚本。已有单独设置的脚本保持原样。")
-                .setSingleChoiceItems(arrayOf("关闭", "开启"), if (rememberByDefault) 1 else 0) { dialog, index ->
-                    prefs.edit().putBoolean("defaultRememberInput", index == 1).apply()
-                    dialog.dismiss()
-                    showTab()
-                }.setNegativeButton("取消", null).show()
+            styledDialog("默认记忆输入", "此默认值用于没有单独设置过记忆输入的脚本。已有单独设置的脚本保持原样。", { dialog ->
+                column().apply {
+                    listOf(false, true).forEach { enabled ->
+                        addView(optionCard(if (enabled) "开启" else "关闭",
+                            if (enabled) "默认记住脚本的交互输入" else "默认不记住脚本的交互输入", rememberByDefault == enabled) {
+                            prefs.edit().putBoolean("defaultRememberInput", enabled).apply()
+                            dialog.dismiss()
+                            showTab()
+                        })
+                    }
+                }
+            }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
         modeSelector = button(modeText()) { chooseMode() }
         area.addView(modeSelector)
@@ -1674,7 +1704,9 @@ class MainActivity : Activity() {
             text = "执行结束后自动保存日志"; setTextColor(this@MainActivity.foreground); isChecked = prefs.getBoolean("saveLogs", true)
             setPadding(dp(10), dp(16), dp(10), dp(16)); setOnCheckedChangeListener { _, enabled -> prefs.edit().putBoolean("saveLogs", enabled).apply() }
         })
-        area.addView(text("设备与记录", 13f, accent)); area.addView(text("Root 状态 · 已授权"))
+        area.addView(text("设备与记录", 13f, accent))
+        area.addView(button("执行历史保留 · ${ExecutionHistory.limit(this)} 次") { editExecutionHistoryLimit() })
+        area.addView(text("Root 状态 · 已授权"))
         area.addView(button("重新检查 Root") { checkRoot() })
         area.addView(button("查看执行日志") { work({ root.logs() }) { message("执行日志", it.output.ifBlank { "暂无日志" }) } })
         area.addView(button("清理临时文件") {
@@ -1686,6 +1718,30 @@ class MainActivity : Activity() {
         area.addView(button("GitHub 仓库") { openExternalLink("https://github.com/yunhe4550-design/Tubing") })
         area.addView(text("Tubing ${packageManager.getPackageInfo(packageName, 0).versionName}\nRoot 交互终端", 12f))
         content.addView(ScrollView(this).apply { addView(area) }, FrameLayout.LayoutParams(-1, -1))
+    }
+    private fun editExecutionHistoryLimit() {
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setSingleLine(true)
+            setText(ExecutionHistory.limit(this@MainActivity).toString())
+            selectAll()
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("执行历史保留次数")
+            .setMessage("默认 50 次。调小后只保留最近记录，超出部分将删除。")
+            .setView(input).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val limit = input.text.toString().toIntOrNull()
+                if (limit == null || limit < 1) {
+                    input.error = "请输入大于 0 的整数"
+                } else {
+                    ExecutionHistory.setLimit(this, limit)
+                    dialog.dismiss()
+                    showTab()
+                }
+            }
+        }
+        dialog.show()
     }
     private fun openExternalLink(url: String) {
         try {

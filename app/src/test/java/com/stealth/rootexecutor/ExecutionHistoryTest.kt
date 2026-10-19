@@ -9,9 +9,19 @@ class ExecutionHistoryTest {
     @Test fun retainsRepeatedRunsAsSeparateRecordsAndBoundsHistory() {
         var records = emptyList<ExecutionRecord>()
         repeat(205) { records = ExecutionHistoryRecords.start(records, record(it.toString())) }
-        assertEquals(200, records.size)
-        assertEquals("5", records.first().id)
+        assertEquals(50, records.size)
+        assertEquals("155", records.first().id)
         assertEquals("204", records.last().id)
+    }
+
+    @Test fun respectsConfiguredLimitAndKeepsNewestRuns() {
+        var records = emptyList<ExecutionRecord>()
+        repeat(80) { records = ExecutionHistoryRecords.start(records, record(it.toString()), 60) }
+        assertEquals(60, records.size)
+        records = ExecutionHistoryRecords.start(records, record("80"), 10)
+        assertEquals(10, records.size)
+        assertEquals("71", records.first().id)
+        assertEquals("80", records.last().id)
     }
 
     @Test fun finishingUpdatesOnlyMatchingRunAndPreservesOtherScripts() {
