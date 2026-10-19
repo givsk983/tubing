@@ -35,7 +35,7 @@
       <rect x="148" width="134" height="40" rx="20" fill="#10242d" stroke="#235665"/>
       <text x="215" y="26" text-anchor="middle" fill="#9ee9f4">PIPE + PTY</text>
       <rect x="294" width="158" height="40" rx="20" fill="#10242d" stroke="#235665"/>
-      <text x="373" y="26" text-anchor="middle" fill="#9ee9f4">v1.3.1 TEST</text>
+      <text x="373" y="26" text-anchor="middle" fill="#9ee9f4">v1.3.2 TEST</text>
     </g>
   </g>
 

@@ -34,6 +34,16 @@ class MainActivity : Activity() {
     private var terminalReady = false
     private var terminalStatus: TextView? = null
     private var startButton: Button? = null
+    private val startButtonHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val startButtonRefresh = object : Runnable {
+        override fun run() {
+            if (isDestroyed) return
+            startButton?.let { renderStartButton(it) }
+            if (SessionState.startGate.isPreparing() || SessionState.running ||
+                SessionState.startGate.remainingMillis(android.os.SystemClock.elapsedRealtime()) > 0L)
+                startButtonHandler.postDelayed(this, 100)
+        }
+    }
     private var shortcutButton: Button? = null
     private var interfaceModeBar: LinearLayout? = null
     private var interfaceModeButton: Button? = null
@@ -100,11 +110,14 @@ class MainActivity : Activity() {
     }
     private fun button(label: String, action: () -> Unit) = Button(this).apply {
         text = label; isAllCaps = false; setTextColor(accent); textSize = 13f
-        backgroundTintList = android.content.res.ColorStateList.valueOf(panel)
-        background = InsetDrawable(GradientDrawable().apply {
+        backgroundTintList = null
+        stateListAnimator = null
+        val surface = GradientDrawable().apply {
             setColor(panel); cornerRadius = dp(10).toFloat()
             setStroke(dp(1), if (dark) Color.rgb(61, 83, 105) else Color.rgb(171, 192, 207))
-        }, dp(3))
+        }
+        background = InsetDrawable(android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(Color.argb(40, 40, 185, 207)), surface, null), dp(3))
         setOnClickListener { action() }
     }
     private fun base(): LinearLayout {
@@ -122,7 +135,7 @@ class MainActivity : Activity() {
     }
     private fun showGate(message: String = "正在检查 Root 权限…") {
         page = base().apply { gravity = Gravity.CENTER_VERTICAL }
-        page.addView(text("tubing", 40f, accent).apply { typeface = Typeface.MONOSPACE })
+        page.addView(text("Tubing", 40f, accent).apply { typeface = Typeface.MONOSPACE })
         page.addView(text("设备授权", 23f))
         page.addView(text("连接设备的执行核心。\n授权成功后，即可进入交互终端。"))
         page.addView(text(message, 15f, accent))
@@ -141,7 +154,7 @@ class MainActivity : Activity() {
                     showMain()
                     if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
                         requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 9)
-                } else showGate("未获得 Root 授权，无法进入。\n请在 Root 管理器中允许 tubing。\n退出码：${result.code}\n${result.output}")
+                } else showGate("未获得 Root 授权，无法进入。\n请在 Root 管理器中允许 Tubing。\n退出码：${result.code}\n${result.output}")
             }
         }
     }
@@ -152,7 +165,7 @@ class MainActivity : Activity() {
         prefs.edit().putBoolean("quickInterface", prefs.getBoolean("homeDefaultQuickInterface", false)).apply()
         page = base()
         val heading = FrameLayout(this)
-        heading.addView(text("tubing", 27f, accent).apply { typeface = Typeface.MONOSPACE; gravity = Gravity.CENTER_VERTICAL },
+        heading.addView(text("Tubing", 27f, accent).apply { typeface = Typeface.MONOSPACE; gravity = Gravity.CENTER_VERTICAL },
             FrameLayout.LayoutParams(-2, dp(58), Gravity.START or Gravity.CENTER_VERTICAL))
         startButton = createStartButton()
         heading.addView(startButton, FrameLayout.LayoutParams(-2, dp(48), Gravity.CENTER))
@@ -224,15 +237,50 @@ class MainActivity : Activity() {
         typeface = Typeface.DEFAULT_BOLD
         setPadding(dp(22), 0, dp(22), 0)
         backgroundTintList = null
-        background = InsetDrawable(GradientDrawable().apply {
-            setColor(accent)
-            cornerRadius = dp(if (large) 22 else 12).toFloat()
-        }, dp(3))
+        fun surface(color: Int) = GradientDrawable().apply {
+            setColor(color); cornerRadius = dp(if (large) 22 else 12).toFloat()
+        }
+        val states = android.graphics.drawable.StateListDrawable().apply {
+            addState(intArrayOf(-android.R.attr.state_enabled), surface(if (dark) Color.rgb(51, 100, 113) else Color.rgb(143, 192, 199)))
+            addState(intArrayOf(android.R.attr.state_pressed), surface(Color.rgb(30, 157, 178)))
+            addState(intArrayOf(), surface(accent))
+        }
+        background = InsetDrawable(android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(Color.argb(80, 255, 255, 255)), states, null), dp(3))
+        val startView = this
+        stateListAnimator = android.animation.StateListAnimator().apply {
+            fun scale(value: Float) = android.animation.AnimatorSet().apply {
+                playTogether(android.animation.ObjectAnimator.ofFloat(startView, "scaleX", value),
+                    android.animation.ObjectAnimator.ofFloat(startView, "scaleY", value))
+                duration = 100
+            }
+            addState(intArrayOf(android.R.attr.state_pressed, android.R.attr.state_enabled), scale(0.96f))
+            addState(intArrayOf(), scale(1f))
+        }
+        renderStartButton(this)
+        refreshStartButton()
+    }
+
+    private fun renderStartButton(button: Button) {
+        val remaining = SessionState.startGate.remainingMillis(android.os.SystemClock.elapsedRealtime())
+        val preparing = SessionState.startGate.isPreparing()
+        button.isEnabled = !preparing && remaining == 0L && !SessionState.running
+        button.text = when {
+            preparing -> "准备中…"
+            remaining > 0L -> "${(remaining + 999L) / 1_000L} 秒后重试"
+            SessionState.running -> "运行中"
+            else -> "Start"
+        }
+    }
+
+    private fun refreshStartButton() {
+        startButtonHandler.removeCallbacks(startButtonRefresh)
+        startButtonHandler.post(startButtonRefresh)
     }
 
     private fun quickExecutionPage() {
         val group = column().apply { gravity = Gravity.CENTER_HORIZONTAL }
-        group.addView(text("tubing", 40f, accent).apply {
+        group.addView(text("Tubing", 40f, accent).apply {
             typeface = Typeface.MONOSPACE
             gravity = Gravity.CENTER
             letterSpacing = 0.06f
@@ -254,12 +302,16 @@ class MainActivity : Activity() {
 
     private fun chooseInterfaceMode() {
         val quick = prefs.getBoolean("quickInterface", false)
-        AlertDialog.Builder(this).setTitle("切换界面模式")
-            .setSingleChoiceItems(arrayOf("完整版", "快捷版"), if (quick) 1 else 0) { dialog, index ->
-                prefs.edit().putBoolean("quickInterface", index == 1).apply()
-                dialog.dismiss()
-                showTab()
-            }.setNegativeButton("取消", null).show()
+        styledDialog("切换界面模式", "选择适合当前操作的界面", { dialog ->
+            column().apply {
+                listOf("完整版" to "终端交互、文件管理与完整设置", "快捷版" to "保留常用快捷方式与 Start 启动").forEachIndexed { index, (title, detail) ->
+                    addView(optionCard(title, detail, quick == (index == 1)) {
+                        prefs.edit().putBoolean("quickInterface", index == 1).apply()
+                        dialog.dismiss(); showTab()
+                    })
+                }
+            }
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
     }
 
     private fun fileManagerPage() {
@@ -511,15 +563,14 @@ class MainActivity : Activity() {
     private fun executionPage() {
         val area = column()
         val actions = LinearLayout(this)
-        actions.addView(button("导入文件") { AlertDialog.Builder(this).setTitle("导入文件").setItems(arrayOf("SH 脚本（系统文件选择器）", "ELF 二进制（系统文件选择器）", "从同步路径导入")) { _, i ->
-            if (i == 2) chooseSyncSource() else
-                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, 100 + i)
-        }.show() }, LinearLayout.LayoutParams(0, -2, 1f))
+        actions.addView(button("导入文件") { showImportOptions() }, LinearLayout.LayoutParams(0, -2, 1f))
         actions.addView(button("选择文件") { chooseFile() }, LinearLayout.LayoutParams(0, -2, 1f)); area.addView(actions)
         val controls = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         controls.addView(text(if (SessionState.running) SessionState.title else selected?.name ?: "选择文件后开始执行", 12f), LinearLayout.LayoutParams(0, -2, 1f))
         controls.addView(button("执行") { launch() })
-        controls.addView(button("终止") { if (SessionState.running) AlertDialog.Builder(this).setMessage("终止当前脚本及其子进程？").setNegativeButton("取消", null).setPositiveButton("终止") { _, _ -> ExecutionService.active?.terminate() }.show() })
+        controls.addView(button("终止") {
+            if (SessionState.running) confirmAction("终止执行", "终止当前脚本及其子进程？", "终止") { ExecutionService.active?.terminate() }
+        })
         area.addView(controls)
         modeSelector = button(modeText()) { chooseMode() }
         area.addView(modeSelector)
@@ -546,6 +597,28 @@ class MainActivity : Activity() {
         }
         executionKeyBar?.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(keys) }, FrameLayout.LayoutParams(-1, -1))
         content.addView(area, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    private fun showImportOptions() {
+        styledDialog("导入文件", "选择文件类型或从常用目录导入", { dialog ->
+            column().apply {
+                addView(optionCard("SH 脚本", "通过系统文件选择器导入 .sh 文件") {
+                    dialog.dismiss(); openImportPicker(100)
+                })
+                addView(optionCard("ELF 二进制", "通过系统文件选择器导入 Android 可执行文件") {
+                    dialog.dismiss(); openImportPicker(101)
+                })
+                addView(optionCard("从同步路径导入", "浏览下载、QQ、Telegram 等已保存路径") {
+                    dialog.dismiss(); chooseSyncSource()
+                })
+            }
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
+    }
+
+    private fun openImportPicker(requestCode: Int) {
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
+        }, requestCode)
     }
 
     private fun syncSources(): MutableList<SyncSource> {
@@ -575,11 +648,17 @@ class MainActivity : Activity() {
 
     private fun openFavorites() {
         val sources = syncSources()
-        val labels = sources.map { "★  ${it.label}  ·  ${it.path}" }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("收藏夹")
-            .setItems(labels) { _, index -> navigateBrowser(activeBrowserLeft, sources[index].path) }
-            .setPositiveButton("管理收藏夹") { _, _ -> manageSyncSources() }
-            .setNegativeButton("关闭", null).show()
+        styledDialog("收藏夹", "点击路径，在当前文件栏打开", { dialog ->
+            column().apply {
+                if (sources.isEmpty()) addView(text("暂无收藏路径。", 14f, mutedColor()))
+                sources.forEach { source ->
+                    addView(optionCard(source.label, source.path) { dialog.dismiss(); navigateBrowser(activeBrowserLeft, source.path) })
+                }
+            }
+        }, { dialog -> listOf(
+            "管理路径" to { dialog.dismiss(); manageSyncSources() },
+            "关闭" to { dialog.dismiss() }
+        ) })
     }
 
     private fun saveSyncSources(sources: List<SyncSource>) {
@@ -590,58 +669,75 @@ class MainActivity : Activity() {
 
     private fun manageSyncSources() {
         val sources = syncSources()
-        val labels = sources.map { "${it.label}  ·  ${it.path}" }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("同步路径")
-            .setItems(labels) { _, index -> editSyncSource(index) }
-            .setPositiveButton("新增路径") { _, _ -> editSyncSource(null) }
-            .setNegativeButton("关闭", null).show()
+        styledDialog("同步路径", "共 ${sources.size} 个路径 · 点击编辑", { dialog ->
+            column().apply {
+                if (sources.isEmpty()) addView(text("还没有同步路径，点击下方新增。", 14f, mutedColor()))
+                sources.forEachIndexed { index, source ->
+                    addView(optionCard(source.label, source.path) { dialog.dismiss(); editSyncSource(index) })
+                }
+            }
+        }, { dialog -> listOf(
+            "新增路径" to { dialog.dismiss(); editSyncSource(null) },
+            "关闭" to { dialog.dismiss() }
+        ) })
     }
 
     private fun chooseSyncSource() {
         val sources = syncSources()
-        val labels = sources.map { "${it.label}  ·  ${it.path}" }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("选择同步路径")
-            .setItems(labels) { _, index -> syncSource(sources[index].path) }
-            .setPositiveButton("管理路径") { _, _ -> manageSyncSources() }
-            .setNegativeButton("取消", null).show()
+        styledDialog("选择同步路径", "选择常用目录，浏览其中的脚本与文件", { dialog ->
+            column().apply {
+                if (sources.isEmpty()) addView(text("暂无路径，请先添加同步路径。", 14f, mutedColor()))
+                sources.forEach { source ->
+                    addView(optionCard(source.label, source.path) { dialog.dismiss(); syncSource(source.path) })
+                }
+            }
+        }, { dialog -> listOf(
+            "管理路径" to { dialog.dismiss(); manageSyncSources() },
+            "取消" to { dialog.dismiss() }
+        ) })
     }
 
     private fun editSyncSource(index: Int?) {
-        val sources = syncSources()
-        val current = index?.let { sources.getOrNull(it) }
-        val form = column().apply { setPadding(dp(20), dp(8), dp(20), 0) }
-        val labelInput = EditText(this).apply { hint = "路径标签，例如：我的下载"; setText(current?.label ?: "") }
-        val pathInput = EditText(this).apply {
-            hint = "绝对路径，例如：/storage/emulated/0/Download"; setText(current?.path ?: "")
-            setSingleLine(false); minLines = 2; inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        val current = index?.let { syncSources().getOrNull(it) }
+        val labelInput = formInput("例如：我的下载", current?.label ?: "")
+        val pathInput = formInput("/storage/emulated/0/Download", current?.path ?: "", multiline = true).apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         }
-        form.addView(labelInput); form.addView(pathInput)
-        val dialog = AlertDialog.Builder(this).setTitle(if (current == null) "新增同步路径" else "编辑同步路径")
-            .setView(form).setNegativeButton("取消", null)
-            .setPositiveButton("保存", null)
-            .apply { if (current != null) setNeutralButton("删除", null) }.create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        styledDialog(if (current == null) "新增同步路径" else "编辑同步路径", "保存常用目录，导入时可快速访问", {
+            column().apply {
+                addView(text("路径名称", 13f, mutedColor())); addView(labelInput)
+                addView(text("绝对路径", 13f, mutedColor())); addView(pathInput)
+                addView(text("仅保存目录入口，不会移动或修改目录中的文件。", 12f, mutedColor()))
+            }
+        }, { dialog ->
+            val actions = mutableListOf<Pair<String, () -> Unit>>()
+            if (current != null) actions.add("删除" to {
+                confirmAction("删除同步路径", "移除“${current.label}”的目录入口？目录中的文件会保留。", "删除") {
+                    val updated = syncSources()
+                    updated.removeAll { it == current }
+                    saveSyncSources(updated); dialog.dismiss(); showTab(); manageSyncSources()
+                }
+            })
+            actions.add("取消" to { dialog.dismiss() })
+            actions.add("保存" to save@{
                 val label = labelInput.text.toString().trim()
                 val path = pathInput.text.toString().trim()
-                if (label.isBlank() || path.isBlank() || !path.startsWith('/')) {
-                    message("路径无效", "请填写标签和以 / 开头的绝对路径。")
-                    return@setOnClickListener
+                if (label.isBlank()) {
+                    labelInput.error = "请填写路径名称"; labelInput.requestFocus(); return@save
+                }
+                if (!path.startsWith('/') || path.any { it == '\u0000' || it == '\n' || it == '\r' } ||
+                    path.split('/').any { it == ".." }) {
+                    pathInput.error = "请输入以 / 开头的有效绝对路径"; pathInput.requestFocus(); return@save
                 }
                 val updated = syncSources()
+                val target = updated.indexOf(current)
                 val entry = SyncSource(label, path)
-                if (index == null || current == null) updated.add(entry) else updated[index] = entry
-                saveSyncSources(updated); dialog.dismiss(); showTab()
-            }
-            if (current != null) dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                AlertDialog.Builder(this).setMessage("删除同步路径“${current.label}”？")
-                    .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
-                        val updated = syncSources(); if (index in updated.indices) updated.removeAt(index!!)
-                        saveSyncSources(updated); dialog.dismiss(); showTab()
-                    }.show()
-            }
-        }
-        dialog.show()
+                if (target >= 0) updated[target] = entry else updated.add(entry)
+                saveSyncSources(updated); dialog.dismiss(); showTab(); manageSyncSources()
+            })
+            actions
+        })
     }
 
     private fun syncSource(path: String) {
@@ -654,32 +750,40 @@ class MainActivity : Activity() {
 
     private fun showSourceEntries(path: String, entries: List<SourceEntry>) {
         if (entries.isEmpty()) { message("目录为空", path); return }
-        val labels = entries.map { entry ->
-            val name = entry.path.substringAfterLast('/')
-            if (entry.directory) "📁  $name" else "📄  $name"
-        }.toTypedArray()
-        AlertDialog.Builder(this).setTitle(path).setItems(labels) { _, index ->
-            val entry = entries[index]
-            if (entry.directory) syncSource(entry.path)
-            else chooseSourceKind(entry.path)
-        }.setNegativeButton("关闭", null).show()
+        styledDialog("浏览同步目录", path, { dialog ->
+            column().apply {
+                entries.forEach { entry ->
+                    addView(optionCard(entry.path.substringAfterLast('/'), if (entry.directory) "文件夹 · 点击进入" else "文件 · 点击导入") {
+                        dialog.dismiss()
+                        if (entry.directory) syncSource(entry.path) else chooseSourceKind(entry.path)
+                    })
+                }
+            }
+        }, { dialog -> listOf("关闭" to { dialog.dismiss() }) })
     }
 
     private fun chooseSourceKind(path: String) {
         val name = path.substringAfterLast('/')
         val options = if (name.endsWith(".sh", true)) arrayOf("导入为 SH 脚本") else arrayOf("导入为 ELF 二进制", "导入为 SH 脚本")
-        AlertDialog.Builder(this).setTitle(name).setItems(options) { _, index ->
-            val kind = if (options.size == 1 || index == 1) "scripts" else "binaries"
-            work({
-                val result = root.importSource(path, name, kind)
-                check(result.code == 0) { result.output.ifBlank { "导入失败" } }
-                result
-            }) { result ->
-                val fields = result.output.lineSequence().firstOrNull { it.startsWith("IMPORTED|") }?.split('|')
-                if (fields?.size == 3) selected = ManagedFile(fields[1], fields[2], "777")
-                tab = 0; showTab(); message("导入完成", selected?.name ?: "文件已导入")
+        styledDialog("选择导入类型", name, { dialog ->
+            column().apply {
+                options.forEachIndexed { index, label ->
+                    addView(optionCard(label, if (options.size == 1 || index == 1) "通过 sh 执行" else "校验 ELF 魔数后直接执行") {
+                        dialog.dismiss()
+                        val kind = if (options.size == 1 || index == 1) "scripts" else "binaries"
+                        work({
+                            val result = root.importSource(path, name, kind)
+                            check(result.code == 0) { result.output.ifBlank { "导入失败" } }
+                            result
+                        }) { result ->
+                            val fields = result.output.lineSequence().firstOrNull { it.startsWith("IMPORTED|") }?.split('|')
+                            if (fields?.size == 3) selected = ManagedFile(fields[1], fields[2], "777")
+                            tab = 0; showTab(); message("导入完成", selected?.name ?: "文件已导入")
+                        }
+                    })
+                }
             }
-        }.setNegativeButton("取消", null).show()
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
     }
     @android.annotation.SuppressLint("SetJavaScriptEnabled")
     private fun createTerminal() = WebView(this).apply {
@@ -700,12 +804,22 @@ class MainActivity : Activity() {
     }
     private fun chooseFile(afterSelection: () -> Unit = {}) = work({ root.list().let { (r, files) -> check(r.code == 0) { r.output }; files } }) { files ->
         if (files.isEmpty()) message("暂无文件", "请先导入 SH 或 ELF 文件。")
-        else AlertDialog.Builder(this).setTitle("选择执行文件").setItems(files.map { "${it.name}  ·  ${it.mode}" }.toTypedArray()) { _, i -> selected = files[i]; showTab(); afterSelection() }.show()
+        else styledDialog("选择执行文件", "共 ${files.size} 个文件 · 点击选择", { dialog ->
+            column().apply {
+                files.forEach { file ->
+                    addView(optionCard(file.name, "${if (file.kind == "scripts") "SH 脚本" else "ELF 二进制"} · 权限 ${file.mode}",
+                        selected?.kind == file.kind && selected?.name == file.name) {
+                        selected = file; dialog.dismiss(); showTab(); afterSelection()
+                    })
+                }
+            }
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
     }
 
-    private fun launch(inputSteps: List<String> = emptyList(), trackInputHistory: Boolean = true) {
-        if (SessionState.running) { message("脚本正在运行", "请先结束当前会话。"); return }
-        val file = selected ?: run { chooseFile(); return }
+    private fun launch(inputSteps: List<String> = emptyList(), trackInputHistory: Boolean = true): Boolean {
+        if (SessionState.running) { message("脚本正在运行", "请先结束当前会话。"); return false }
+        val file = selected ?: run { chooseFile(); return false }
+        if (!SessionState.startGate.tryStart(android.os.SystemClock.elapsedRealtime())) return false
         synchronized(inputCaptureLock) {
             inputCaptureBuffer.clear(); skipNextLineFeed = false; skipEscapeSequence = 0; inputCaptureTrackable = true
         }
@@ -713,9 +827,18 @@ class MainActivity : Activity() {
         val mode = preferredMode()
         SessionState.mode = mode
         terminal?.evaluateJavascript("window.setMode(${JSONObject.quote(mode.key)})", null)
-        startForegroundService(Intent(this, ExecutionService::class.java).putExtra("kind", file.kind).putExtra("name", file.name).putExtra("mode", mode.key)
-            .putExtra("rememberInput", remembersInput(file)).putExtra("trackInputHistory", trackInputHistory)
-            .putStringArrayListExtra("inputSteps", ArrayList(inputSteps)))
+        return try {
+            startForegroundService(Intent(this, ExecutionService::class.java).putExtra("kind", file.kind).putExtra("name", file.name).putExtra("mode", mode.key)
+                .putExtra("rememberInput", remembersInput(file)).putExtra("trackInputHistory", trackInputHistory)
+                .putStringArrayListExtra("inputSteps", ArrayList(inputSteps)))
+            refreshStartButton()
+            true
+        } catch (e: Exception) {
+            SessionState.startGate.resetAfterFailure()
+            refreshStartButton()
+            message("启动失败", e.message ?: "无法启动执行服务")
+            false
+        }
     }
 
     private fun quickShortcuts(): MutableList<QuickShortcut> = try {
@@ -872,10 +995,18 @@ class MainActivity : Activity() {
         subtitle: String,
         content: (android.app.Dialog) -> View,
         actions: (android.app.Dialog) -> List<Pair<String, () -> Unit>>
-    ) {
+    ): android.app.Dialog {
         val dialog = android.app.Dialog(this)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        val body = column().apply {
+        val body = object : LinearLayout(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val screenLimit = (resources.displayMetrics.heightPixels * 0.88f).toInt()
+                val limit = if (View.MeasureSpec.getMode(heightMeasureSpec) == View.MeasureSpec.UNSPECIFIED) screenLimit
+                    else minOf(screenLimit, View.MeasureSpec.getSize(heightMeasureSpec))
+                super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST))
+            }
+        }.apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(20), dp(20), dp(16))
             background = GradientDrawable().apply {
                 setColor(panel); cornerRadius = dp(20).toFloat()
@@ -887,16 +1018,12 @@ class MainActivity : Activity() {
             setPadding(dp(4), 0, dp(4), dp(4))
             if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
         })
-        body.addView(text(subtitle, 13f, mutedColor()).apply { setPadding(dp(4), dp(4), dp(4), dp(16)) })
-        val scroll = object : ScrollView(this) {
-            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                val available = (resources.displayMetrics.heightPixels * 0.85f - dp(240)).toInt().coerceAtLeast(dp(48))
-                val limit = if (View.MeasureSpec.getMode(heightMeasureSpec) == View.MeasureSpec.UNSPECIFIED) available
-                    else minOf(available, View.MeasureSpec.getSize(heightMeasureSpec))
-                super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST))
-            }
-        }.apply { addView(content(dialog)) }
-        body.addView(scroll, LinearLayout.LayoutParams(-1, -2))
+        if (subtitle.isNotBlank()) body.addView(text(subtitle, 13f, mutedColor()).apply {
+            maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            setPadding(dp(4), dp(4), dp(4), dp(16))
+        })
+        val scroll = ScrollView(this).apply { addView(content(dialog)); clipToPadding = false }
+        body.addView(scroll, LinearLayout.LayoutParams(-1, -2, 1f))
         val footer = LinearLayout(this)
         actions(dialog).forEach { (label, action) ->
             footer.addView(button(label, action), LinearLayout.LayoutParams(0, dp(50), 1f))
@@ -906,7 +1033,55 @@ class MainActivity : Activity() {
         dialog.setCanceledOnTouchOutside(true)
         dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
         dialog.show()
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels - dp(32), dp(480)), -2)
+        return dialog
+    }
+
+    private fun optionCard(title: String, detail: String, active: Boolean = false, onClick: () -> Unit) = dialogCard(active).apply {
+        minimumHeight = dp(64)
+        background = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(Color.argb(40, 40, 185, 207)), background, null)
+        val heading = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER_VERTICAL }
+        heading.addView(text(title, 16f).apply {
+            typeface = Typeface.DEFAULT_BOLD
+            maxLines = 3; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            setPadding(0, 0, dp(8), 0)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        if (active) heading.addView(text("✓ 已选", 12f, accent).apply { setPadding(0, 0, 0, 0) })
+        addView(heading)
+        if (detail.isNotBlank()) addView(text(detail, 13f, mutedColor()).apply { setPadding(0, dp(7), 0, 0) })
+        contentDescription = "$title，$detail${if (active) "，已选" else ""}"
+        for (i in 0 until childCount) getChildAt(i).importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        isFocusable = true; isClickable = true; isSelected = active
+        setOnClickListener { onClick() }
+    }
+
+    private fun formInput(placeholder: String, value: String = "", multiline: Boolean = false) = EditText(this).apply {
+        hint = placeholder; setText(value); textSize = 15f
+        setTextColor(this@MainActivity.foreground); setHintTextColor(mutedColor())
+        setPadding(dp(12), dp(12), dp(12), dp(12))
+        minimumHeight = dp(50)
+        setSingleLine(!multiline)
+        if (multiline) {
+            minLines = 2; gravity = Gravity.TOP
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        }
+        background = android.graphics.drawable.StateListDrawable().apply {
+            fun surface(stroke: Int) = GradientDrawable().apply {
+                setColor(this@MainActivity.background); cornerRadius = dp(10).toFloat(); setStroke(dp(1), stroke)
+            }
+            addState(intArrayOf(android.R.attr.state_focused), surface(accent))
+            addState(intArrayOf(), surface(Color.parseColor(if (dark) "#3d5369" else "#abc0cf")))
+        }
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) }
+    }
+
+    private fun confirmAction(title: String, description: String, actionLabel: String, onConfirm: () -> Unit) {
+        styledDialog(title, "", { text(description, 15f) }, { dialog -> listOf(
+            "取消" to { dialog.dismiss() },
+            actionLabel to { dialog.dismiss(); onConfirm() }
+        ) })
     }
 
     private fun mutedColor() = Color.parseColor(if (dark) "#94a9bc" else "#536d82")
@@ -1053,17 +1228,29 @@ class MainActivity : Activity() {
             return
         }
         val shortcut = activeQuickShortcut() ?: run { showQuickShortcuts(); return }
-        work({ root.list() }) { (result, files) ->
-            if (result.code != 0) { message("读取脚本失败", result.output); return@work }
+        if (!SessionState.startGate.tryPrepare(android.os.SystemClock.elapsedRealtime())) return
+        startButton?.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        startButton?.let { renderStartButton(it) }
+        refreshStartButton()
+        io.execute {
+            val listing = runCatching { root.list() }
+            runOnUiThread {
+            SessionState.startGate.finishPreparation()
+            if (isDestroyed) return@runOnUiThread
+            refreshStartButton()
+            val (result, files) = listing.getOrElse {
+                message("读取脚本失败", it.message ?: "无法读取脚本列表"); return@runOnUiThread
+            }
+            if (result.code != 0) { message("读取脚本失败", result.output); return@runOnUiThread }
             val file = files.firstOrNull { it.kind == shortcut.kind && it.name == shortcut.fileName }
-            if (file == null) { message("脚本不存在", "快捷方式“${shortcut.name}”对应的文件已删除，请重新编辑快捷方式。"); return@work }
+            if (file == null) { message("脚本不存在", "快捷方式“${shortcut.name}”对应的文件已删除，请重新编辑快捷方式。"); return@runOnUiThread }
             if (shortcut.presetName != null && readInputPresets(file).none { it.name == shortcut.presetName }) {
-                message("输入方案不存在", "快捷方式“${shortcut.name}”的输入方案已删除，请编辑快捷方式。"); return@work
+                message("输入方案不存在", "快捷方式“${shortcut.name}”的输入方案已删除，请编辑快捷方式。"); return@runOnUiThread
             }
             selected = file
             val preset = shortcut.presetName?.let { name -> readInputPresets(file).firstOrNull { it.name == name } }
-            launch(preset?.steps ?: emptyList(), trackInputHistory = false)
-            watchQuickExecution(shortcut.name)
+            if (launch(preset?.steps ?: emptyList(), trackInputHistory = false)) watchQuickExecution(shortcut.name)
+            }
         }
     }
 
@@ -1237,143 +1424,128 @@ class MainActivity : Activity() {
     private fun showInputPresets() {
         val file = selected ?: run { chooseFile { showInputPresets() }; return }
         val presets = readInputPresets(file)
-        val builder = AlertDialog.Builder(this).setTitle("${file.name} · 输入方案")
-            .setPositiveButton("新建方案") { _, _ -> editInputPreset(file, null) }
-            .setNeutralButton("管理方案") { _, _ -> manageInputPresets(file) }
-            .setNegativeButton("关闭", null)
-        if (presets.isEmpty()) builder.setMessage("还没有输入方案。可以保存一组按顺序逐项发送的文本输入。")
-        else builder.setItems(presets.map { "${it.name}  ·  ${it.steps.size} 项" }.toTypedArray()) { _, index ->
-            showInputPresetActions(file, index)
+        styledDialog("输入方案", "为当前脚本保存和管理常用输入", { dialog ->
+            column().apply {
+                addView(text(file.name, 13f, mutedColor()).apply { setPadding(dp(4), 0, dp(4), dp(14)) })
+                if (presets.isEmpty()) addView(text("还没有输入方案。新建方案后，可在运行时逐项确认发送。", 14f, mutedColor()))
+                presets.forEachIndexed { index, preset ->
+                    addView(optionCard(preset.name, "${preset.steps.size} 项输入 · 点击查看操作") {
+                        dialog.dismiss(); showInputPresetActions(file, index)
+                    })
+                }
+                addView(button("＋ 新建方案") { dialog.dismiss(); editInputPreset(file, null) }, LinearLayout.LayoutParams(-1, dp(50)))
+            }
+        }, { dialog -> listOf(
+            "管理方案" to { dialog.dismiss(); manageInputPresets(file) },
+            "关闭" to { dialog.dismiss() }
+        ) })
+    }
+
+    private fun deleteInputPreset(file: ManagedFile, preset: ScriptInputPreset, onDeleted: () -> Unit) {
+        confirmAction("删除输入方案", "删除“${preset.name}”？关联快捷方式将不再使用此方案。", "删除") {
+            val current = readInputPresets(file)
+            current.removeAll { it.name == preset.name }
+            saveInputPresets(file, current)
+            updateShortcutPresetReferences(file, preset.name, null)
+            onDeleted()
         }
-        builder.show()
     }
 
     private fun manageInputPresets(file: ManagedFile) {
         val presets = readInputPresets(file)
-        val list = column().apply { setPadding(dp(18), dp(8), dp(18), dp(8)) }
-        val dialog = AlertDialog.Builder(this).setTitle("${file.name} · 管理方案")
-            .setView(ScrollView(this).apply { addView(list) })
-            .setPositiveButton("新建方案") { _, _ -> editInputPreset(file, null) }
-            .setNegativeButton("关闭", null).create()
-        if (presets.isEmpty()) list.addView(text("暂无输入方案。", 14f))
-        presets.forEachIndexed { index, preset ->
-            list.addView(text("${preset.name} · ${preset.steps.size} 项", 16f, accent))
-            val actions = LinearLayout(this)
-            actions.addView(button("编辑") { dialog.dismiss(); editInputPreset(file, index) }, LinearLayout.LayoutParams(0, dp(44), 1f))
-            actions.addView(button("重命名") { dialog.dismiss(); renameInputPreset(file, index) }, LinearLayout.LayoutParams(0, dp(44), 1f))
-            actions.addView(button("删除") {
-                AlertDialog.Builder(this).setMessage("删除输入方案“${preset.name}”？")
-                    .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
-                        val current = readInputPresets(file)
-                        if (index in current.indices) current.removeAt(index)
-                        saveInputPresets(file, current)
-                        updateShortcutPresetReferences(file, preset.name, null)
-                        dialog.dismiss()
-                        manageInputPresets(file)
-                    }.show()
-            }, LinearLayout.LayoutParams(0, dp(44), 1f))
-            list.addView(actions)
-        }
-        dialog.show()
+        styledDialog("管理输入方案", file.name, { dialog ->
+            column().apply {
+                if (presets.isEmpty()) addView(text("暂无输入方案，点击下方新建。", 14f, mutedColor()))
+                presets.forEachIndexed { index, preset ->
+                    val card = dialogCard()
+                    card.addView(text(preset.name, 17f).apply { typeface = Typeface.DEFAULT_BOLD })
+                    card.addView(text("${preset.steps.size} 项输入", 13f, mutedColor()))
+                    val actions = LinearLayout(this@MainActivity)
+                    actions.addView(button("编辑") { dialog.dismiss(); editInputPreset(file, index) }, LinearLayout.LayoutParams(0, dp(48), 1f))
+                    actions.addView(button("重命名") { dialog.dismiss(); renameInputPreset(file, index) }, LinearLayout.LayoutParams(0, dp(48), 1f))
+                    actions.addView(button("删除") {
+                        deleteInputPreset(file, preset) { dialog.dismiss(); manageInputPresets(file) }
+                    }, LinearLayout.LayoutParams(0, dp(48), 1f))
+                    card.addView(actions); addView(card)
+                }
+            }
+        }, { dialog -> listOf(
+            "＋ 新建方案" to { dialog.dismiss(); editInputPreset(file, null) },
+            "关闭" to { dialog.dismiss() }
+        ) })
     }
 
     private fun renameInputPreset(file: ManagedFile, index: Int) {
-        val presets = readInputPresets(file)
-        val current = presets.getOrNull(index) ?: return
-        val input = EditText(this).apply { setText(current.name); setSelection(text.length); setSingleLine(true) }
-        val dialog = AlertDialog.Builder(this).setTitle("重命名输入方案").setView(input)
-            .setNegativeButton("取消", null).setPositiveButton("保存", null).create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        val current = readInputPresets(file).getOrNull(index) ?: return
+        val input = formInput("方案名称", current.name)
+        styledDialog("重命名输入方案", file.name, { input }, { dialog -> listOf(
+            "取消" to { dialog.dismiss() },
+            "保存" to save@{
                 val name = input.text.toString().trim()
-                if (name.isBlank()) { message("名称不能为空", "请填写方案名称。"); return@setOnClickListener }
                 val updated = readInputPresets(file)
-                if (updated.any { it.name.equals(name, ignoreCase = true) && it.name != current.name }) {
-                    message("名称已存在", "请使用另一个方案名称。"); return@setOnClickListener
+                if (name.isBlank()) { input.error = "请填写方案名称"; input.requestFocus(); return@save }
+                if (updated.any { it.name.equals(name, true) && it.name != current.name }) {
+                    input.error = "名称已存在，请使用另一个名称"; input.requestFocus(); return@save
                 }
                 val target = updated.indexOfFirst { it.name == current.name }
                 if (target >= 0) updated[target] = current.copy(name = name)
                 saveInputPresets(file, updated)
                 updateShortcutPresetReferences(file, current.name, name)
-                dialog.dismiss()
-                manageInputPresets(file)
+                dialog.dismiss(); manageInputPresets(file)
             }
-        }
-        dialog.show()
+        ) })
     }
 
     private fun showInputPresetActions(file: ManagedFile, index: Int) {
-        val presets = readInputPresets(file)
-        val preset = presets.getOrNull(index) ?: return
-        val actions = if (SessionState.running && ExecutionService.active != null &&
-            SessionState.kind == file.kind && SessionState.title == file.name)
-            arrayOf("逐项发送", "编辑方案", "删除方案")
-        else arrayOf("编辑方案", "删除方案")
-        AlertDialog.Builder(this).setTitle("${preset.name} · ${preset.steps.size} 项")
-            .setItems(actions) { _, action ->
-                when (actions[action]) {
-                    "逐项发送" -> confirmPresetStep(preset, 0)
-                    "编辑方案" -> editInputPreset(file, index)
-                    "删除方案" -> AlertDialog.Builder(this).setMessage("删除输入方案“${preset.name}”？")
-                        .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
-                            val current = readInputPresets(file)
-                            if (index in current.indices) current.removeAt(index)
-                            saveInputPresets(file, current)
-                            showInputPresets()
-                        }.show()
-                }
-            }.setNegativeButton("取消", null).show()
+        val preset = readInputPresets(file).getOrNull(index) ?: return
+        val canSend = SessionState.running && ExecutionService.active != null &&
+            SessionState.kind == file.kind && SessionState.title == file.name
+        styledDialog("方案操作", "${preset.name} · ${preset.steps.size} 项输入", { dialog ->
+            column().apply {
+                if (canSend) addView(optionCard("逐项发送", "每次确认一项输入后再发送给当前脚本") {
+                    dialog.dismiss(); confirmPresetStep(preset, 0)
+                })
+                addView(optionCard("编辑方案", "修改名称与输入内容") { dialog.dismiss(); editInputPreset(file, index) })
+                addView(optionCard("删除方案", "删除本机保存的此输入方案") {
+                    deleteInputPreset(file, preset) { dialog.dismiss(); showInputPresets() }
+                })
+            }
+        }, { dialog -> listOf("关闭" to { dialog.dismiss() }) })
     }
 
     private fun editInputPreset(file: ManagedFile, index: Int?) {
-        val presets = readInputPresets(file)
-        val current = index?.let { presets.getOrNull(it) }
-        val form = column().apply { setPadding(dp(20), dp(8), dp(20), 0) }
-        val nameInput = EditText(this).apply {
-            hint = "方案名称，例如：默认配置"
-            setSingleLine(true)
-            setText(current?.name ?: "")
-        }
-        val stepsInput = EditText(this).apply {
-            hint = "每行一项输入，运行时逐项确认发送"
-            minLines = 4
-            gravity = Gravity.TOP
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            setText(current?.steps?.joinToString("\n") ?: "")
-        }
-        form.addView(nameInput)
-        form.addView(stepsInput, LinearLayout.LayoutParams(-1, dp(150)))
-        form.addView(text("方案保存在本机，请勿保存密码或密钥。", 12f, accent))
-        val dialog = AlertDialog.Builder(this).setTitle(if (current == null) "新建输入方案" else "编辑输入方案")
-            .setView(form).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        val current = index?.let { readInputPresets(file).getOrNull(it) }
+        val nameInput = formInput("例如：默认配置", current?.name ?: "")
+        val stepsInput = formInput("每行一项输入", current?.steps?.joinToString("\n") ?: "", multiline = true).apply { minLines = 4 }
+        styledDialog(if (current == null) "新建输入方案" else "编辑输入方案", file.name, {
+            column().apply {
+                addView(text("方案名称", 13f, mutedColor())); addView(nameInput)
+                addView(text("输入内容 · 每行一项", 13f, mutedColor())); addView(stepsInput)
+                addView(text("保存在本机，运行时逐项确认发送。请勿保存密码或密钥。", 12f, mutedColor()))
+            }
+        }, { dialog -> listOf(
+            "取消" to { dialog.dismiss() },
+            "保存" to save@{
                 val name = nameInput.text.toString().trim()
                 val rawSteps = stepsInput.text.toString()
-                if (name.isBlank() || rawSteps.isBlank()) {
-                    message("内容不完整", "请填写方案名称和至少一项输入。")
-                    return@setOnClickListener
-                }
+                if (name.isBlank()) { nameInput.error = "请填写方案名称"; nameInput.requestFocus(); return@save }
+                if (rawSteps.isBlank()) { stepsInput.error = "请填写至少一项输入"; stepsInput.requestFocus(); return@save }
                 val steps = rawSteps.split('\n').map { it.removeSuffix("\r") }
                 if (steps.size > 50 || steps.any { it.length > 4096 }) {
-                    message("方案太长", "每个方案最多 50 项，每项最多 4096 个字符。")
-                    return@setOnClickListener
+                    stepsInput.error = "最多 50 项，每项最多 4096 个字符"; stepsInput.requestFocus(); return@save
                 }
                 val updated = readInputPresets(file)
-                val duplicate = updated.indexOfFirst { it.name.equals(name, ignoreCase = true) }
-                val preset = ScriptInputPreset(name, steps)
-                when {
-                    index != null && index in updated.indices -> updated[index] = preset
-                    duplicate >= 0 -> updated[duplicate] = preset
-                    else -> updated.add(preset)
+                if (updated.any { it.name.equals(name, true) && it.name != current?.name }) {
+                    nameInput.error = "名称已存在，请使用另一个名称"; nameInput.requestFocus(); return@save
                 }
+                val target = updated.indexOfFirst { it.name == current?.name }
+                val preset = ScriptInputPreset(name, steps)
+                if (target >= 0) updated[target] = preset else updated.add(preset)
                 saveInputPresets(file, updated)
                 if (current != null && current.name != name) updateShortcutPresetReferences(file, current.name, name)
-                dialog.dismiss()
-                showInputPresets()
+                dialog.dismiss(); showInputPresets()
             }
-        }
-        dialog.show()
+        ) })
     }
 
     private fun confirmPresetStep(preset: ScriptInputPreset, index: Int) {
@@ -1450,11 +1622,18 @@ class MainActivity : Activity() {
     }
     private fun chooseMode() {
         val modes = ExecutionMode.entries
-        AlertDialog.Builder(this).setTitle(if (SessionState.running) "执行方式（下次执行生效）" else "选择执行方式")
-            .setSingleChoiceItems(arrayOf("管道（默认）· 普通问答、批处理", "PTY 伪终端 · 终端菜单、方向键交互"), modes.indexOf(preferredMode())) { dialog, index ->
-                prefs.edit().putString("executionMode", modes[index].key).apply()
-                dialog.dismiss(); showTab()
-            }.setNegativeButton("取消", null).show()
+        styledDialog("选择执行方式", if (SessionState.running) "当前会话保持不变，选择对下次执行生效" else "按脚本的交互需求选择", { dialog ->
+            column().apply {
+                modes.forEach { mode ->
+                    val pipe = mode == ExecutionMode.PIPE
+                    addView(optionCard(if (pipe) "管道 · 默认" else "PTY 伪终端",
+                        if (pipe) "适合普通问答、逐行输入和批处理" else "适合终端菜单、方向键和单键交互", mode == preferredMode()) {
+                        prefs.edit().putString("executionMode", mode.key).apply()
+                        dialog.dismiss(); showTab()
+                    })
+                }
+            }
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
     }
     private fun settingsPage() {
         val area = column(); area.addView(text("设置", 25f)); area.addView(text("显示与终端", 13f, accent))
@@ -1505,7 +1684,7 @@ class MainActivity : Activity() {
         area.addView(text("反馈与项目", 13f, accent))
         area.addView(button("反馈频道 · Telegram") { openExternalLink("https://t.me/mbazhuan") })
         area.addView(button("GitHub 仓库") { openExternalLink("https://github.com/yunhe4550-design/Tubing") })
-        area.addView(text("tubing ${packageManager.getPackageInfo(packageName, 0).versionName}\nRoot 交互终端", 12f))
+        area.addView(text("Tubing ${packageManager.getPackageInfo(packageName, 0).versionName}\nRoot 交互终端", 12f))
         content.addView(ScrollView(this).apply { addView(area) }, FrameLayout.LayoutParams(-1, -1))
     }
     private fun openExternalLink(url: String) {
@@ -1549,5 +1728,5 @@ class MainActivity : Activity() {
             Toast.makeText(this, "再按一次返回键退出", Toast.LENGTH_SHORT).show()
         }
     }
-    override fun onDestroy() { SessionState.unsubscribe(listener); terminalReady = false; terminal?.destroy(); io.shutdown(); super.onDestroy() }
+    override fun onDestroy() { startButtonHandler.removeCallbacks(startButtonRefresh); SessionState.unsubscribe(listener); terminalReady = false; terminal?.destroy(); io.shutdown(); super.onDestroy() }
 }

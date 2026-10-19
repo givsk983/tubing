@@ -8,6 +8,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 
 object SessionState {
+    val startGate = ExecutionStartGate()
     private val main = Handler(Looper.getMainLooper())
     private val history = StringBuilder()
     private val observers = linkedSetOf<(String) -> Unit>()
@@ -91,7 +92,7 @@ class ExecutionService : Service() {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val stop = PendingIntent.getService(this, 1, Intent(this, ExecutionService::class.java).setAction(STOP), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val notification = Notification.Builder(this, "execution").setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle("tubing · ${mode.label}执行中").setContentText(name).setContentIntent(open).setOngoing(true)
+            .setContentTitle("Tubing · ${mode.label}执行中").setContentText(name).setContentIntent(open).setOngoing(true)
             .addAction(Notification.Action.Builder(null, "终止执行", stop).build()).build()
         startForeground(7, notification)
         val lease = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tubing:execution").apply { setReferenceCounted(false) }
@@ -113,12 +114,12 @@ class ExecutionService : Service() {
                 log.bufferedWriter().use { writer ->
                     val callback: (String) -> Unit = { text -> synchronized(writer) { writer.write(text); writer.flush() }; SessionState.output(text) }
                     if (stopping) error("执行已取消")
-                    callback("\u001b[36m[tubing] 执行方式：${mode.label}\u001b[0m\r\n")
+                    callback("\u001b[36m[Tubing] 执行方式：${mode.label}\u001b[0m\r\n")
                     if (mode == ExecutionMode.PIPE) callback("[输入提示] 输入后按回车提交；方向键菜单请选择 PTY。\r\n")
                     val code = terminal.run(ManagedFile(kind, name, ""), callback)
                     SessionState.exitCode = code
                     SessionState.status = if (stopping) "已终止" else "已结束 · 退出码 $code"
-                    callback("\r\n[tubing] ${SessionState.status}\r\n")
+                    callback("\r\n[Tubing] ${SessionState.status}\r\n")
                 }
             } catch (e: Throwable) {
                 SessionState.exitCode = null

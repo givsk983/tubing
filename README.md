@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.1"><img alt="Release v1.3.1" src="https://img.shields.io/badge/release-v1.3.1-28B9CF?style=flat-square"></a>
+  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.2"><img alt="Release v1.3.2" src="https://img.shields.io/badge/release-v1.3.2-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.1">下载 APK</a>
+  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.2">下载 APK</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.1` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.2` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -64,16 +64,16 @@
 
 ### 2. 安装测试版
 
-从 [GitHub Releases](https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.1) 下载 `tubing-v1.3.1.apk`，或通过 ADB 安装：
+从 [GitHub Releases](https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.2) 下载 `tubing-v1.3.2.apk`，或通过 ADB 安装：
 
 ```bash
-adb install -r tubing-v1.3.1.apk
+adb install -r tubing-v1.3.2.apk
 ```
 
 本地仓库中 APK 的 SHA-256：
 
 ```text
-3d52c983248b1cb63026af650d0966cced082fa297421f348cb2cbd3a08ddefa
+fdec8827192e4ee0c0080b35087b8f041120236e6362e239ce0155ba5795b773
 ```
 
 ### 3. 完成第一次执行
@@ -141,7 +141,7 @@ app/src/main/java/com/stealth/rootexecutor/
 
 ## 当前状态
 
-`v1.3.1` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端。发布包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
+`v1.3.2` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端。发布包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
 
 ## 第三方组件与许可
 
