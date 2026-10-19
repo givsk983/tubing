@@ -20,8 +20,8 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
 
-private data class SyncSource(val label: String, val path: String)
 private data class ScriptInputPreset(val name: String, val steps: List<String>)
+private data class SyncSource(val label: String, val path: String)
 private data class QuickShortcut(val name: String, val kind: String, val fileName: String, val presetName: String?)
 
 class MainActivity : Activity() {
@@ -45,8 +45,6 @@ class MainActivity : Activity() {
     private var checking = false
     private var tab = 0
     private var selected: ManagedFile? = null
-    private var inputHistoryFile: ManagedFile? = null
-    private var trackInputHistoryForSession = true
     private val inputCaptureLock = Any()
     private val inputCaptureBuffer = StringBuilder()
     private var skipNextLineFeed = false
@@ -527,7 +525,7 @@ class MainActivity : Activity() {
         area.addView(modeSelector)
         terminalStatus = text(SessionState.status, 12f, accent); area.addView(terminalStatus)
         val inputTools = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        inputHistoryButton = button("输入历史") { showInputHistory() }
+        inputHistoryButton = button("执行历史") { showInputHistory() }
         val inputPresetButton = button("输入方案") { showInputPresets() }
         inputMemoryButton = button(inputMemoryLabel()) { configureInputMemory() }
         inputTools.addView(inputHistoryButton, LinearLayout.LayoutParams(0, dp(42), 1f))
@@ -700,16 +698,14 @@ class MainActivity : Activity() {
         }, "Android")
         loadUrl("file:///android_asset/terminal/index.html?${if (dark) "dark" else "light"}")
     }
-    private fun chooseFile() = work({ root.list().let { (r, files) -> check(r.code == 0) { r.output }; files } }) { files ->
+    private fun chooseFile(afterSelection: () -> Unit = {}) = work({ root.list().let { (r, files) -> check(r.code == 0) { r.output }; files } }) { files ->
         if (files.isEmpty()) message("暂无文件", "请先导入 SH 或 ELF 文件。")
-        else AlertDialog.Builder(this).setTitle("选择执行文件").setItems(files.map { "${it.name}  ·  ${it.mode}" }.toTypedArray()) { _, i -> selected = files[i]; showTab() }.show()
+        else AlertDialog.Builder(this).setTitle("选择执行文件").setItems(files.map { "${it.name}  ·  ${it.mode}" }.toTypedArray()) { _, i -> selected = files[i]; showTab(); afterSelection() }.show()
     }
 
     private fun launch(inputSteps: List<String> = emptyList(), trackInputHistory: Boolean = true) {
         if (SessionState.running) { message("脚本正在运行", "请先结束当前会话。"); return }
         val file = selected ?: run { chooseFile(); return }
-        inputHistoryFile = file
-        trackInputHistoryForSession = trackInputHistory
         synchronized(inputCaptureLock) {
             inputCaptureBuffer.clear(); skipNextLineFeed = false; skipEscapeSequence = 0; inputCaptureTrackable = true
         }
@@ -718,6 +714,7 @@ class MainActivity : Activity() {
         SessionState.mode = mode
         terminal?.evaluateJavascript("window.setMode(${JSONObject.quote(mode.key)})", null)
         startForegroundService(Intent(this, ExecutionService::class.java).putExtra("kind", file.kind).putExtra("name", file.name).putExtra("mode", mode.key)
+            .putExtra("rememberInput", remembersInput(file)).putExtra("trackInputHistory", trackInputHistory)
             .putStringArrayListExtra("inputSteps", ArrayList(inputSteps)))
     }
 
@@ -762,33 +759,189 @@ class MainActivity : Activity() {
 
     private fun showQuickShortcuts() {
         val shortcuts = quickShortcuts()
-        val rows = shortcuts.map { "${it.name}  ·  ${it.fileName}${it.presetName?.let { name -> "  ·  $name" } ?: ""}" }.toMutableList()
-        rows.add("＋ 新建方式")
-        AlertDialog.Builder(this).setTitle("选择快捷方式")
-            .setItems(rows.toTypedArray()) { _, index ->
-                if (index == shortcuts.size) editQuickShortcut(null)
-                else {
-                    prefs.edit().putString("activeQuickShortcut", shortcuts[index].name).apply()
+        val activeName = activeQuickShortcut()?.name
+        val muted = Color.parseColor(if (dark) "#94a9bc" else "#536d82")
+        val outline = Color.parseColor(if (dark) "#3d5369" else "#abc0cf")
+        val dialog = android.app.Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        val body = column().apply {
+            setPadding(dp(20), dp(20), dp(20), dp(16))
+            background = GradientDrawable().apply {
+                setColor(panel)
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), outline)
+            }
+        }
+        body.addView(text("选择快捷方式", 22f).apply {
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(4), 0, dp(4), dp(4))
+            if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+        })
+        body.addView(text(if (shortcuts.isEmpty()) "添加常用脚本，方便下次启动" else "共 ${shortcuts.size} 个方式 · 点击切换后使用 Start 启动", 13f, muted).apply {
+            setPadding(dp(4), dp(4), dp(4), dp(16))
+        })
+
+        val list = column()
+        if (shortcuts.isEmpty()) {
+            list.addView(text("暂无快捷方式", 17f).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(12), dp(28), dp(12), dp(8))
+            })
+            list.addView(text("点击下方“新建方式”选择脚本与输入方案。", 13f, muted).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(12), 0, dp(12), dp(28))
+            })
+        }
+        shortcuts.forEach { shortcut ->
+            val active = shortcut.name == activeName
+            val card = column().apply {
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                val surface = GradientDrawable().apply {
+                    setColor(if (active) Color.parseColor(if (dark) "#142c38" else "#e7f7fa") else this@MainActivity.background)
+                    cornerRadius = dp(12).toFloat()
+                    setStroke(dp(1), if (active) accent else outline)
+                }
+                background = android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(Color.argb(40, 40, 185, 207)), surface, null)
+                isClickable = true
+                isFocusable = true
+                isSelected = active
+                contentDescription = "${shortcut.name}，${if (active) "当前方式，" else ""}文件：${shortcut.fileName}，输入方案：${shortcut.presetName ?: "不使用"}"
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+                setOnClickListener {
+                    prefs.edit().putString("activeQuickShortcut", shortcut.name).apply()
                     updateShortcutButton()
-                    Toast.makeText(this, "已切换到${shortcuts[index].name}", Toast.LENGTH_SHORT).show()
+                    dialog.dismiss()
+                    Toast.makeText(this@MainActivity, "已切换到${shortcut.name}", Toast.LENGTH_SHORT).show()
                 }
             }
-            .setNeutralButton("管理方式") { _, _ -> manageQuickShortcuts() }
-            .setNegativeButton("关闭", null).show()
+            val heading = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+            heading.addView(text(shortcut.name, 17f).apply {
+                typeface = Typeface.DEFAULT_BOLD
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, 0, dp(8), 0)
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            if (active) heading.addView(text("✓ 当前", 12f, accent).apply {
+                setPadding(dp(8), dp(4), 0, dp(4))
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            card.addView(heading)
+            card.addView(text(shortcut.fileName, 13f, muted).apply {
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+                setPadding(0, dp(8), 0, dp(4))
+            })
+            card.addView(text("输入方案 · ${shortcut.presetName ?: "不使用"}", 12f, muted).apply {
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, dp(2), 0, 0)
+            })
+            // The whole card is one accessible selection, with a complete untruncated label.
+            for (i in 0 until card.childCount)
+                card.getChildAt(i).importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        }
+        val scroll = object : ScrollView(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val available = (resources.displayMetrics.heightPixels * 0.85f - dp(240)).toInt().coerceAtLeast(dp(48))
+                val limit = if (View.MeasureSpec.getMode(heightMeasureSpec) == View.MeasureSpec.UNSPECIFIED) available
+                    else minOf(available, View.MeasureSpec.getSize(heightMeasureSpec))
+                super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST))
+            }
+        }.apply {
+            addView(list)
+            clipToPadding = false
+        }
+        body.addView(scroll, LinearLayout.LayoutParams(-1, -2))
+        body.addView(button("＋ 新建方式") { dialog.dismiss(); editQuickShortcut(null) },
+            LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(6) })
+        val footer = LinearLayout(this)
+        footer.addView(button("管理方式") { dialog.dismiss(); manageQuickShortcuts() }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        footer.addView(button("关闭") { dialog.dismiss() }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        body.addView(footer, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        dialog.setContentView(body)
+        dialog.setCanceledOnTouchOutside(true)
+        dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        dialog.show()
+        dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels - dp(32), dp(480)), -2)
+    }
+
+    private fun styledDialog(
+        title: String,
+        subtitle: String,
+        content: (android.app.Dialog) -> View,
+        actions: (android.app.Dialog) -> List<Pair<String, () -> Unit>>
+    ) {
+        val dialog = android.app.Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        val body = column().apply {
+            setPadding(dp(20), dp(20), dp(20), dp(16))
+            background = GradientDrawable().apply {
+                setColor(panel); cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), Color.parseColor(if (dark) "#3d5369" else "#abc0cf"))
+            }
+        }
+        body.addView(text(title, 22f).apply {
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(4), 0, dp(4), dp(4))
+            if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+        })
+        body.addView(text(subtitle, 13f, mutedColor()).apply { setPadding(dp(4), dp(4), dp(4), dp(16)) })
+        val scroll = object : ScrollView(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val available = (resources.displayMetrics.heightPixels * 0.85f - dp(240)).toInt().coerceAtLeast(dp(48))
+                val limit = if (View.MeasureSpec.getMode(heightMeasureSpec) == View.MeasureSpec.UNSPECIFIED) available
+                    else minOf(available, View.MeasureSpec.getSize(heightMeasureSpec))
+                super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST))
+            }
+        }.apply { addView(content(dialog)) }
+        body.addView(scroll, LinearLayout.LayoutParams(-1, -2))
+        val footer = LinearLayout(this)
+        actions(dialog).forEach { (label, action) ->
+            footer.addView(button(label, action), LinearLayout.LayoutParams(0, dp(50), 1f))
+        }
+        body.addView(footer, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        dialog.setContentView(body)
+        dialog.setCanceledOnTouchOutside(true)
+        dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        dialog.show()
+        dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels - dp(32), dp(480)), -2)
+    }
+
+    private fun mutedColor() = Color.parseColor(if (dark) "#94a9bc" else "#536d82")
+
+    private fun dialogCard(active: Boolean = false) = column().apply {
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        background = GradientDrawable().apply {
+            setColor(if (active) Color.parseColor(if (dark) "#142c38" else "#e7f7fa") else this@MainActivity.background)
+            cornerRadius = dp(12).toFloat()
+            setStroke(dp(1), if (active) accent else Color.parseColor(if (dark) "#3d5369" else "#abc0cf"))
+        }
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) }
     }
 
     private fun manageQuickShortcuts() {
         val shortcuts = quickShortcuts()
-        val list = column().apply { setPadding(dp(20), dp(8), dp(20), dp(8)) }
-        val dialog = AlertDialog.Builder(this).setTitle("管理快捷方式")
-            .setView(ScrollView(this).apply { addView(list) })
-            .setPositiveButton("新建方式") { _, _ -> editQuickShortcut(null) }
-            .setNegativeButton("关闭", null).create()
-        if (shortcuts.isEmpty()) list.addView(text("暂无快捷方式，点击“新建方式”添加。", 14f))
+        styledDialog("管理快捷方式", "共 ${shortcuts.size} 个方式 · 管理脚本与输入方案的组合", { dialog ->
+        val list = column()
+        if (shortcuts.isEmpty()) list.addView(text("暂无快捷方式，点击下方新建。", 14f, mutedColor()))
         shortcuts.forEach { shortcut ->
             val active = prefs.getString("activeQuickShortcut", null) == shortcut.name
-            list.addView(text(shortcut.name + if (active) " · 当前方式" else "", 17f, accent))
-            list.addView(text(shortcut.fileName + "\n输入方案：${shortcut.presetName ?: "不使用"}", 13f))
+            val card = dialogCard(active)
+            val heading = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+            heading.addView(text(shortcut.name, 17f).apply {
+                typeface = Typeface.DEFAULT_BOLD
+                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            if (active) heading.addView(text("✓ 当前", 12f, accent))
+            card.addView(heading)
+            card.addView(text(shortcut.fileName, 13f, mutedColor()).apply {
+                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            })
+            card.addView(text("输入方案 · ${shortcut.presetName ?: "不使用"}", 12f, mutedColor()).apply {
+                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+            })
             val actions = LinearLayout(this)
             actions.addView(button("编辑") { dialog.dismiss(); editQuickShortcut(shortcut) }, LinearLayout.LayoutParams(0, dp(46), 1f))
             actions.addView(button("重命名") { dialog.dismiss(); renameQuickShortcut(shortcut) }, LinearLayout.LayoutParams(0, dp(46), 1f))
@@ -805,9 +958,14 @@ class MainActivity : Activity() {
                         manageQuickShortcuts()
                     }.show()
             }, LinearLayout.LayoutParams(0, dp(46), 1f))
-            list.addView(actions)
+            card.addView(actions)
+            list.addView(card)
         }
-        dialog.show()
+        list
+        }, { dialog -> listOf(
+            "＋ 新建方式" to { dialog.dismiss(); editQuickShortcut(null) },
+            "关闭" to { dialog.dismiss() }
+        ) })
     }
 
     private fun renameQuickShortcut(shortcut: QuickShortcut) {
@@ -903,7 +1061,6 @@ class MainActivity : Activity() {
                 message("输入方案不存在", "快捷方式“${shortcut.name}”的输入方案已删除，请编辑快捷方式。"); return@work
             }
             selected = file
-            inputHistoryFile = file
             val preset = shortcut.presetName?.let { name -> readInputPresets(file).firstOrNull { it.name == name } }
             launch(preset?.steps ?: emptyList(), trackInputHistory = false)
             watchQuickExecution(shortcut.name)
@@ -928,8 +1085,6 @@ class MainActivity : Activity() {
         window.decorView.postDelayed(check, 300)
     }
 
-    private fun inputTargetFile(): ManagedFile? = if (SessionState.running) inputHistoryFile else selected
-
     private fun inputHistoryKey(file: ManagedFile, suffix: String): String {
         val identity = "${file.kind}/${file.name}"
         val encoded = Base64.encodeToString(identity.toByteArray(Charsets.UTF_8), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
@@ -942,21 +1097,16 @@ class MainActivity : Activity() {
     }
 
     private fun inputMemoryLabel(): String {
-        val file = inputTargetFile()
-        return if (file != null && remembersInput(file)) "记忆输入：开" else "记忆输入：关"
+        val enabled = selected?.let { remembersInput(it) } ?: prefs.getBoolean("defaultRememberInput", false)
+        return if (enabled) "记忆输入：开" else "记忆输入：关"
     }
 
     private fun configureInputMemory() {
-        val file = inputTargetFile() ?: run { message("先选择脚本", "选择脚本后，可以为它单独开启输入记忆。"); return }
+        val file = selected ?: run { chooseFile { configureInputMemory() }; return }
         val enabled = remembersInput(file)
-        AlertDialog.Builder(this).setTitle(if (enabled) "关闭输入记忆" else "开启输入记忆")
-            .setMessage(if (enabled) "关闭后将停止记录“${file.name}”的新输入，已有历史会保留。" else "只在本机保存“${file.name}”最近提交的输入。若输入包含密码或密钥，请不要开启记忆。")
-            .setNegativeButton("取消", null)
-            .setPositiveButton(if (enabled) "关闭" else "开启") { _, _ ->
-                prefs.edit().putBoolean(inputHistoryKey(file, "enabled"), !enabled).apply()
-                if (enabled) synchronized(inputCaptureLock) { inputCaptureBuffer.clear(); inputCaptureTrackable = true }
-                inputMemoryButton?.text = inputMemoryLabel()
-            }.show()
+        prefs.edit().putBoolean(inputHistoryKey(file, "enabled"), !enabled).apply()
+        inputMemoryButton?.text = inputMemoryLabel()
+        Toast.makeText(this, if (enabled) "记忆输入已关闭" else "记忆输入已开启", Toast.LENGTH_SHORT).show()
     }
 
     private fun readInputHistory(file: ManagedFile): List<String> = try {
@@ -965,16 +1115,73 @@ class MainActivity : Activity() {
     } catch (_: Exception) { emptyList() }
 
     private fun saveInputHistoryLine(file: ManagedFile, line: String) {
-        if (line.isBlank() || line.length > 4096 || !remembersInput(file)) return
+        if (line.isBlank() || line.length > 4096) return
         val history = readInputHistory(file).toMutableList().apply { add(line) }.takeLast(20)
         val array = org.json.JSONArray().apply { history.forEach { put(it) } }
         prefs.edit().putString(inputHistoryKey(file, "history"), array.toString()).apply()
     }
 
     private fun showInputHistory() {
-        val file = inputTargetFile() ?: run { message("先选择脚本", "选择并运行脚本后，可以查看它的输入历史。"); return }
-        if (!remembersInput(file)) { message("输入记忆已关闭", "先开启“记忆输入”，之后提交的文本输入会保存在“${file.name}”的历史中。"); return }
-        if (!SessionState.running || ExecutionService.active == null) { message("脚本未运行", "启动“${file.name}”后，可以从历史中选择并发送输入。"); return }
+        val records = ExecutionHistory.read(this).asReversed()
+        val dateFormat = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.getDefault())
+        styledDialog("执行历史", "最近 200 次 · 包含普通执行和快捷启动", { dialog ->
+            column().apply {
+                if (records.isEmpty()) addView(text("暂无执行记录。运行脚本后会自动记录，与输入记忆和日志开关无关。", 14f, mutedColor()))
+                records.forEach { record ->
+                    val card = dialogCard()
+                    card.addView(text(record.name, 16f).apply {
+                        typeface = Typeface.DEFAULT_BOLD
+                        maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+                    })
+                    val status = if (record.endedAt == null) {
+                        if (SessionState.running && SessionState.executionId == record.id) "正在运行" else "未确认结束"
+                    } else record.status
+                    card.addView(text("${dateFormat.format(java.util.Date(record.startedAt))} · ${ExecutionMode.fromKey(record.mode).label}", 12f, mutedColor()))
+                    card.addView(text(status, 13f, accent))
+                    card.addView(button("查看记录") { dialog.dismiss(); showExecutionRecord(record) }, LinearLayout.LayoutParams(-1, dp(48)))
+                    addView(card)
+                }
+            }
+        }, { dialog -> listOf(
+            "清空记录" to {
+                styledDialog("清空执行历史", "仅清除执行记录", { text("脚本文件、输入方案与记忆输入均会保留。", 14f) }, { confirm -> listOf(
+                    "取消" to { confirm.dismiss() },
+                    "清空" to { ExecutionHistory.clear(this); confirm.dismiss(); dialog.dismiss(); showInputHistory() }
+                ) })
+            },
+            "关闭" to { dialog.dismiss() }
+        ) })
+    }
+
+    private fun showExecutionRecord(record: ExecutionRecord) {
+        val file = ManagedFile(record.kind, record.name, "")
+        val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+        val status = if (record.endedAt == null) {
+            if (SessionState.running && SessionState.executionId == record.id) "正在运行" else "未确认结束（可能被系统中断）"
+        } else record.status
+        styledDialog("执行记录", record.name, {
+            column().apply {
+                addView(text("开始：${dateFormat.format(java.util.Date(record.startedAt))}\n" +
+                    "结束：${record.endedAt?.let { dateFormat.format(java.util.Date(it)) } ?: "—"}\n" +
+                    "方式：${ExecutionMode.fromKey(record.mode).label}\n状态：$status\n退出码：${record.exitCode ?: "—"}", 14f))
+                addView(button("查看此脚本的记忆输入") { showRememberedInputs(file) }, LinearLayout.LayoutParams(-1, dp(50)))
+            }
+        }, { dialog -> listOf(
+            "选择此脚本" to {
+                work({ root.list() }) { (result, files) ->
+                    if (result.code != 0) message("读取脚本失败", result.output)
+                    else {
+                        val found = files.firstOrNull { it.kind == file.kind && it.name == file.name }
+                        if (found == null) message("脚本不存在", "此文件已被删除，执行记录仍会保留。")
+                        else { selected = found; dialog.dismiss(); tab = 0; showTab() }
+                    }
+                }
+            },
+            "关闭" to { dialog.dismiss() }
+        ) })
+    }
+
+    private fun showRememberedInputs(file: ManagedFile) {
         val history = readInputHistory(file).asReversed()
         if (history.isEmpty()) { message("暂无输入历史", "提交文本输入后会显示在这里。"); return }
         AlertDialog.Builder(this).setTitle("${file.name} · 输入历史")
@@ -994,6 +1201,11 @@ class MainActivity : Activity() {
         val editor = EditText(this).apply { setText(value); setSelection(text.length); setSingleLine(false) }
         AlertDialog.Builder(this).setTitle("确认发送输入").setView(editor)
             .setNegativeButton("取消", null)
+            .setNeutralButton("复制") { _, _ ->
+                (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("记忆输入", editor.text.toString()))
+                Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show()
+            }
             .setPositiveButton("发送") { _, _ ->
                 if (SessionState.running && ExecutionService.active != null) {
                     val text = editor.text.toString()
@@ -1023,7 +1235,7 @@ class MainActivity : Activity() {
     }
 
     private fun showInputPresets() {
-        val file = inputTargetFile() ?: run { message("先选择脚本", "选择脚本后，可以为它保存输入方案。"); return }
+        val file = selected ?: run { chooseFile { showInputPresets() }; return }
         val presets = readInputPresets(file)
         val builder = AlertDialog.Builder(this).setTitle("${file.name} · 输入方案")
             .setPositiveButton("新建方案") { _, _ -> editInputPreset(file, null) }
@@ -1093,7 +1305,8 @@ class MainActivity : Activity() {
     private fun showInputPresetActions(file: ManagedFile, index: Int) {
         val presets = readInputPresets(file)
         val preset = presets.getOrNull(index) ?: return
-        val actions = if (SessionState.running && ExecutionService.active != null)
+        val actions = if (SessionState.running && ExecutionService.active != null &&
+            SessionState.kind == file.kind && SessionState.title == file.name)
             arrayOf("逐项发送", "编辑方案", "删除方案")
         else arrayOf("编辑方案", "删除方案")
         AlertDialog.Builder(this).setTitle("${preset.name} · ${preset.steps.size} 项")
@@ -1194,8 +1407,8 @@ class MainActivity : Activity() {
     }
 
     private fun recordTerminalInput(value: String) {
-        val file = inputHistoryFile ?: return
-        if (!trackInputHistoryForSession || !SessionState.running || !remembersInput(file)) return
+        if (!SessionState.trackInputHistory || !SessionState.running || !SessionState.rememberInput) return
+        val file = ManagedFile(SessionState.kind, SessionState.title, "")
         synchronized(inputCaptureLock) {
             value.forEach { ch ->
                 if (skipNextLineFeed) {

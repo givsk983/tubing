@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.0"><img alt="Release v1.3.0" src="https://img.shields.io/badge/release-v1.3.0-28B9CF?style=flat-square"></a>
+  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.1"><img alt="Release v1.3.1" src="https://img.shields.io/badge/release-v1.3.1-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.0">下载 APK</a>
+  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.1">下载 APK</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.0` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.1` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -36,7 +36,7 @@
 | 交互终端 | 内置离线 xterm.js，流式显示 ANSI 输出并接收键盘与输入法内容 |
 | 快捷启动 | 为脚本绑定输入方案，使用简洁首页一键启动；也可随时切回完整界面 |
 | 文件管理 | 双栏浏览已导入目录与设备存储，支持复制、重命名、删除、新建目录和路径收藏 |
-| 会话与记录 | 前台服务维持运行，可保存日志；任务被划走时尝试终止对应进程组 |
+| 会话与记录 | 记录最近 200 次执行，可保存日志；任务被划走时尝试终止对应进程组 |
 
 ## 执行路径
 
@@ -64,16 +64,16 @@
 
 ### 2. 安装测试版
 
-从 [GitHub Releases](https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.0) 下载 `tubing-v1.3.0.apk`，或通过 ADB 安装：
+从 [GitHub Releases](https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.1) 下载 `tubing-v1.3.1.apk`，或通过 ADB 安装：
 
 ```bash
-adb install -r tubing-v1.3.0.apk
+adb install -r tubing-v1.3.1.apk
 ```
 
 本地仓库中 APK 的 SHA-256：
 
 ```text
-b40e769d181f2ac8844b3ada0841fd1c97bebe4099e59f7e041022c7b376c7a7
+3d52c983248b1cb63026af650d0966cced082fa297421f348cb2cbd3a08ddefa
 ```
 
 ### 3. 完成第一次执行
@@ -132,6 +132,7 @@ tubing 尽量缩小高权限操作的意外范围，但它不是 Root 沙箱：
 app/src/main/java/com/stealth/rootexecutor/
 ├── MainActivity.kt       # 授权、终端、文件管理与设置界面
 ├── ExecutionService.kt   # 前台服务、会话状态与生命周期
+├── ExecutionHistory.kt   # 脚本执行历史与结果持久化
 ├── RootExecutor.kt       # Root 文件操作、校验与启动命令
 ├── PipeSession.kt        # 标准输入输出管道后端
 ├── PtySession.kt         # 基于 Bionic/JNA 的 PTY 后端
@@ -140,7 +141,7 @@ app/src/main/java/com/stealth/rootexecutor/
 
 ## 当前状态
 
-`v1.3.0` 已包含快捷/完整界面、输入历史与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端。发布包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
+`v1.3.1` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端。发布包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
 
 ## 第三方组件与许可
 

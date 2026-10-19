@@ -24,6 +24,10 @@ object SessionState {
     @Volatile var running = false
     @Volatile var status = "终端已就绪"
     @Volatile var title = "交互终端"
+    @Volatile var executionId: String? = null
+    @Volatile var kind = "scripts"
+    @Volatile var rememberInput = false
+    @Volatile var trackInputHistory = true
     @Volatile var mode = ExecutionMode.PIPE
     @Volatile var exitCode: Int? = null
     @Volatile var cols = 80
@@ -78,6 +82,8 @@ class ExecutionService : Service() {
         SessionState.title = name
         SessionState.mode = mode
         SessionState.exitCode = null
+        SessionState.rememberInput = intent.getBooleanExtra("rememberInput", false)
+        SessionState.trackInputHistory = intent.getBooleanExtra("trackInputHistory", true)
         SessionState.status = "正在运行 · ${mode.label}"
         stopping = false
         val manager = getSystemService(NotificationManager::class.java)
@@ -91,6 +97,9 @@ class ExecutionService : Service() {
         val lease = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tubing:execution").apply { setReferenceCounted(false) }
         wake = lease
         val token = UUID.randomUUID().toString()
+        SessionState.executionId = token
+        SessionState.kind = kind
+        ExecutionHistory.start(this, ExecutionRecord(token, kind, name, mode.key, System.currentTimeMillis()))
         executor.execute {
             val log = File(cacheDir, "$token.log")
             try {
@@ -118,6 +127,7 @@ class ExecutionService : Service() {
                 SessionState.output(error)
                 runCatching { log.appendText(error) }
             } finally {
+                ExecutionHistory.finish(this, token, SessionState.status, SessionState.exitCode)
                 main.removeCallbacks(renewWake)
                 if (lease.isHeld) lease.release()
                 try { session?.stop() } catch (_: Exception) { }
