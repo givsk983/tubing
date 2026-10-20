@@ -30,4 +30,18 @@ class ExecutionModeTest {
     @Test(expected = IllegalArgumentException::class) fun maliciousSlaveIsRejected() {
         RootExecutor().sessionCommand(ManagedFile("scripts", "test.sh", "777"), "/dev/pts/1;id", "abc-123")
     }
+
+    @Test fun bothBackendsRepairAndVerifyPermissionsForScriptsAndBinariesRegardlessOfListedMode() {
+        for (kind in listOf("scripts", "binaries")) {
+            for (slave in listOf(null, "/dev/pts/12")) {
+                val command = RootExecutor().sessionCommand(ManagedFile(kind, "test", "600"), slave, "abc-123")
+                val chmod = command.indexOf("chmod 777")
+                val verify = command.indexOf("stat -c %a")
+                val launch = command.indexOf("exec setsid -w")
+                assertTrue(chmod >= 0 && verify > chmod && launch > verify)
+                assertTrue(command.contains("set -eu"))
+                assertTrue(command.contains("权限验证失败'; exit 38"))
+            }
+        }
+    }
 }

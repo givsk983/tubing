@@ -18,7 +18,7 @@
 3. Add SAF import, validation, collision-safe naming, permissions and per-run checks. **Done**
 4. Add Root authorization gate, execution / file management / settings navigation, system / dark / light themes, font size, and optional saved logs. **Implemented**
 5. Add PTY terminal input and streaming output, foreground service, wake lock renewal, and process group termination on task dismissal. **Implemented; rooted device validation pending**
-6. File management provides a dual-pane browser for managed files and device storage, with navigation, favorites, copy, rename, delete, and directory creation. Imports and execution selection remain available from the execution page.
+6. File management provides a dual-pane browser for managed files and device storage, with navigation, favorites, copy, rename, delete, directory creation, and ZIP extraction. Clicking a ZIP opens a private cached snapshot for directory browsing, bounded content previews and cross-directory selection. ZIP data uses Java ZIP support (UTF-8 or legacy GB18030). Full extraction creates a new folder; selected files/folders are staged and published directly into the opposite pane or archive parent directory, refusing existing targets and rolling back newly published items on failure. Extraction rejects path traversal, duplicate paths, invalid CRCs and excessive output (512 MiB archive, 1 GiB expanded data, 10,000 files/directories); encrypted and split ZIP archives are unsupported. Imports and execution selection remain available from the execution page.
 7. Validate Magisk/SU variants, keyboards, screen lock, task dismissal, SELinux enforcing behavior and `noexec` restrictions on rooted devices. **Pending device validation**
 
 ## Interactive session (1.1)

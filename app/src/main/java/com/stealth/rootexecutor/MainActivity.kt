@@ -336,10 +336,23 @@ class MainActivity : Activity() {
         title.addView(text("文件管理", 21f), LinearLayout.LayoutParams(0, dp(48), 1f))
         title.addView(button("刷新") { refreshBrowsers() })
         area.addView(title)
-        val transfer = LinearLayout(this).apply { gravity = Gravity.CENTER }
-        transfer.addView(button("复制到左侧") { copyBetween(false) }, LinearLayout.LayoutParams(0, dp(46), 1f))
-        transfer.addView(button("复制到右侧") { copyBetween(true) }, LinearLayout.LayoutParams(0, dp(46), 1f))
-        area.addView(transfer)
+        if (!prefs.getBoolean("fileLibraryHintDismissed", false)) {
+            val hint = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(4), dp(4), dp(4))
+                background = GradientDrawable().apply {
+                    setColor(if (dark) Color.parseColor("#142c38") else Color.parseColor("#e7f7fa"))
+                    cornerRadius = dp(10).toFloat()
+                }
+            }
+            hint.addView(text("scripts 用于存放 Shell 脚本，binaries 用于存放 ELF 程序。手动复制的文件需自行放入对应目录。", 12f, mutedColor()),
+                LinearLayout.LayoutParams(0, -2, 1f))
+            hint.addView(button("知道了") {
+                prefs.edit().putBoolean("fileLibraryHintDismissed", true).apply()
+                area.removeView(hint)
+            }, LinearLayout.LayoutParams(dp(80), dp(48)))
+            area.addView(hint, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        }
         val panes = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         leftBrowserCaption = null
         rightBrowserCaption = null
@@ -349,7 +362,7 @@ class MainActivity : Activity() {
         panes.addView(divider, LinearLayout.LayoutParams(dp(1), -1))
         panes.addView(browserPane(false), LinearLayout.LayoutParams(0, -1, 1f))
         area.addView(panes, LinearLayout.LayoutParams(-1, 0, 1f))
-        browserTargetLabel = text("操作目标：${if (activeBrowserLeft) "左侧 · 已导入" else "右侧 · 设备目录"}", 11f, accent).apply {
+        browserTargetLabel = text("操作目标：${if (activeBrowserLeft) "左侧 · 执行文件库" else "右侧 · 设备目录"}", 11f, accent).apply {
             gravity = Gravity.CENTER_VERTICAL
         }
         area.addView(browserTargetLabel, LinearLayout.LayoutParams(-1, dp(34)))
@@ -398,11 +411,11 @@ class MainActivity : Activity() {
             isClickable = true
             setOnClickListener { focusBrowser(left); clearBrowserSelection() }
         }
-        val caption = text(if (left) "已导入" else "设备目录", 13f, if (activeBrowserLeft == left) accent else foreground)
+        val caption = text(if (left) "执行文件库" else "设备目录", 13f, if (activeBrowserLeft == left) accent else foreground)
         caption.setOnClickListener { focusBrowser(left) }
         if (left) leftBrowserCaption = caption else rightBrowserCaption = caption
         pane.addView(caption)
-        val pathLabel = text(if (left) leftPath else rightPath, 10f).apply {
+        val pathLabel = text(if (left) leftPath else rightPath, 10f, mutedColor()).apply {
             maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
             setOnClickListener { focusBrowser(left); editBrowserPath(left) }
         }
@@ -428,9 +441,19 @@ class MainActivity : Activity() {
             if (isSelected) {
                 if (left) selectedLeftRow = row else selectedRightRow = row
             }
-            val icon = when (entry.type) { "d" -> "📁"; "l" -> "↪"; "f" -> "📄"; else -> "▪" }
-            row.addView(text("$icon  ${entry.name}", 12f, foreground).apply {
+            val icon = when { entry.type == "d" -> "📁"; entry.type == "l" -> "↪";
+                entry.name.endsWith(".zip", true) -> "📦"; entry.type == "f" -> "📄"; else -> "▪" }
+            val category = if (entry.type == "d") when (entry.path.trimEnd('/')) {
+                "${root.managedRoot}/scripts" -> "Shell 脚本" to "scripts · 存放 .sh 脚本"
+                "${root.managedRoot}/binaries" -> "二进制程序" to "binaries · 存放 Android ELF 可执行文件"
+                else -> null
+            } else null
+            row.addView(text("$icon  ${category?.first ?: entry.name}", if (category != null) 13f else 12f, foreground).apply {
+                if (category != null) typeface = Typeface.DEFAULT_BOLD
                 maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; setPadding(0, dp(3), 0, dp(1))
+            })
+            if (category != null) row.addView(text(category.second, 11f, mutedColor()).apply {
+                setPadding(0, dp(3), 0, dp(7))
             })
             row.setOnTouchListener { _, event ->
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) focusBrowser(left)
@@ -439,6 +462,7 @@ class MainActivity : Activity() {
             row.setOnClickListener {
                 activeBrowserLeft = left
                 if (entry.type == "d") navigateBrowser(left, entry.path, rememberCurrent = true)
+                else if (entry.type == "f" && entry.name.endsWith(".zip", true)) openZipBrowser(left, entry)
                 else {
                     if (left) {
                         selectedLeftRow?.setBackgroundColor(Color.TRANSPARENT)
@@ -466,7 +490,7 @@ class MainActivity : Activity() {
     private fun focusBrowser(left: Boolean) {
         lastBackPressedAt = 0L
         activeBrowserLeft = left
-        browserTargetLabel?.text = "操作目标：${if (left) "左侧 · 已导入" else "右侧 · 设备目录"}"
+        browserTargetLabel?.text = "操作目标：${if (left) "左侧 · 执行文件库" else "右侧 · 设备目录"}"
         leftBrowserCaption?.setTextColor(if (left) accent else foreground)
         rightBrowserCaption?.setTextColor(if (left) foreground else accent)
     }
@@ -534,19 +558,9 @@ class MainActivity : Activity() {
             }.show()
     }
 
-    private fun copyBetween(fromLeft: Boolean) {
-        activeBrowserLeft = fromLeft
-        val source = if (fromLeft) selectedLeft else selectedRight
-        if (source == null) { message("请选择文件", "先在一侧点选文件，再复制到另一侧。目录可长按后复制。"); return }
-        val destination = if (fromLeft) rightPath else leftPath
-        work({ root.copyPath(source.path, destination).also { check(it.code == 0) { it.output.ifBlank { "复制失败" } } } }) {
-            if (fromLeft) selectedLeft = null else selectedRight = null
-            refreshBrowsers()
-        }
-    }
-
     private fun showEntryActions(left: Boolean, entry: BrowserEntry) {
-        val actions = arrayOf("复制到另一侧", "重命名", "删除")
+        val actions = if (entry.type == "f" && entry.name.endsWith(".zip", true))
+            arrayOf("复制到另一侧", "重命名", "删除", "解压 ZIP") else arrayOf("复制到另一侧", "重命名", "删除")
         AlertDialog.Builder(this).setTitle(entry.name).setItems(actions) { _, index ->
             when (index) {
                 0 -> {
@@ -554,6 +568,7 @@ class MainActivity : Activity() {
                     work({ root.copyPath(entry.path, destination).also { check(it.code == 0) { it.output.ifBlank { "复制失败" } } } }) { refreshBrowsers() }
                 }
                 1 -> renameBrowserEntry(left, entry)
+                3 -> showExtractZip(left, entry)
                 2 -> AlertDialog.Builder(this).setMessage(if (entry.type == "d") "删除文件夹“${entry.name}”及其全部内容？" else "删除文件“${entry.name}”？")
                     .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
                         work({ root.deletePath(entry.path, entry.type == "d").also { check(it.code == 0) { it.output.ifBlank { "删除失败" } } } }) { refreshBrowsers() }
@@ -571,6 +586,175 @@ class MainActivity : Activity() {
                     refreshBrowsers()
                 }
             }.show()
+    }
+
+    private fun showExtractZip(left: Boolean, entry: BrowserEntry) {
+        val current = entry.path.substringBeforeLast('/').ifEmpty { "/" }
+        val other = if (left) rightPath else leftPath
+        var destination = current
+        val folder = formInput("新文件夹名称", entry.name.dropLast(4).ifBlank { "解压文件" })
+        styledDialog("解压 ZIP", entry.name, {
+            column().apply {
+                val choices = column()
+                fun renderChoices() {
+                    choices.removeAllViews()
+                    listOf("原目录" to current, "另一侧目录" to other).distinctBy { it.second }.forEach { (label, path) ->
+                        choices.addView(optionCard(label, path, destination == path) {
+                            destination = path; renderChoices()
+                        })
+                    }
+                }
+                renderChoices(); addView(choices)
+                addView(text("解压到新文件夹", 13f, accent)); addView(folder)
+                addView(text("不会覆盖已有同名文件夹。支持普通 ZIP，暂不支持加密或分卷压缩包。", 12f, mutedColor()))
+            }
+        }, { dialog -> listOf(
+            "取消" to { dialog.dismiss() },
+            "解压" to {
+                val name = folder.text.toString().trim()
+                if (name.isBlank() || name in setOf(".", "..") || name.contains('/') || name.contains('\u0000')) {
+                    folder.error = "请输入有效的文件夹名称"
+                } else {
+                    val target = destination
+                    dialog.dismiss()
+                    val progress = styledDialog("正在解压", entry.name, { text("请稍候，完成后将自动刷新文件列表。", 14f) }, { emptyList() })
+                    progress.setCancelable(false); progress.setCanceledOnTouchOutside(false)
+                    io.execute {
+                        val result = runCatching { root.extractZip(entry.path, target, name, cacheDir) }
+                        runOnUiThread {
+                            if (!isDestroyed) {
+                                progress.dismiss()
+                                if (tab == 1) refreshBrowsers()
+                                result.fold({ message("解压完成", it) }, { message("解压失败", it.message ?: "无法读取 ZIP 文件") })
+                            }
+                        }
+                    }
+                }
+            }
+        ) })
+    }
+
+    private fun openZipBrowser(left: Boolean, entry: BrowserEntry) {
+        val loading = styledDialog("正在打开 ZIP", entry.name, { text("读取文件目录，请稍候…", 14f) }, { emptyList() })
+        loading.setCancelable(false); loading.setCanceledOnTouchOutside(false)
+        io.execute {
+            val result = runCatching {
+                val archive = root.prepareZip(entry.path, cacheDir)
+                try { archive to ZipExtractor.inspect(archive) }
+                catch (error: Exception) { archive.parentFile!!.deleteRecursively(); throw error }
+            }
+            runOnUiThread {
+                if (isDestroyed) {
+                    result.getOrNull()?.first?.parentFile?.deleteRecursively()
+                } else {
+                    loading.dismiss()
+                    result.fold({ (archive, items) -> showZipBrowser(left, entry, archive, items) },
+                        { message("无法打开 ZIP", it.message ?: "压缩包损坏或格式不受支持") })
+                }
+            }
+        }
+    }
+
+    private fun showZipBrowser(left: Boolean, entry: BrowserEntry, archive: File, items: List<ZipItem>) {
+        var prefix = ""
+        var visibleCount = 200
+        val selected = linkedSetOf<String>()
+        val listing = column()
+        fun render() {
+            listing.removeAllViews()
+            listing.addView(text("压缩包内：/${prefix}\n已选 ${selected.size} 项 · 长按选择，点击文件预览", 12f, mutedColor()))
+            val navigation = LinearLayout(this)
+            if (prefix.isNotEmpty()) navigation.addView(button("↑ 上级") {
+                prefix = prefix.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
+                visibleCount = 200; render()
+            }, LinearLayout.LayoutParams(0, dp(48), 1f))
+            if (selected.isNotEmpty()) navigation.addView(button("清除选择") { selected.clear(); render() }, LinearLayout.LayoutParams(0, dp(48), 1f))
+            listing.addView(navigation)
+            val children = items.filter { it.path.startsWith(prefix) && '/' !in it.path.removePrefix(prefix) }
+            if (children.isEmpty()) listing.addView(text("目录为空", 14f, mutedColor()))
+            children.take(visibleCount).forEach { item ->
+                val card = optionCard("${if (item.directory) "📁" else "📄"} ${item.name}",
+                    if (item.directory) "文件夹 · 点击进入" else "${item.size} 字节 · 点击预览", item.path in selected) {
+                    if (item.directory) { prefix = item.path + "/"; visibleCount = 200; render() }
+                    else if (selected.isNotEmpty()) {
+                        if (!selected.add(item.path)) selected.remove(item.path)
+                        render()
+                    } else {
+                        work({ ZipExtractor.preview(archive, item) }) { preview ->
+                            if (listing.isAttachedToWindow) styledDialog(item.name, "ZIP 内容预览 · ${item.size} 字节", {
+                                text(preview.ifEmpty { "空文件" }, 13f).apply {
+                                    typeface = Typeface.MONOSPACE; setTextIsSelectable(true)
+                                }
+                            }, { previewDialog -> listOf(
+                                "选择此文件" to { selected.add(item.path); previewDialog.dismiss(); render() },
+                                "关闭" to { previewDialog.dismiss() }
+                            ) })
+                        }
+                    }
+                }
+                card.setOnLongClickListener {
+                    if (!selected.add(item.path)) selected.remove(item.path)
+                    card.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    render(); true
+                }
+                listing.addView(card)
+            }
+            if (children.size > visibleCount) listing.addView(button("显示更多（剩余 ${children.size - visibleCount} 项）") {
+                visibleCount += 200; render()
+            })
+        }
+        render()
+        val browser = styledDialog("ZIP 文件", entry.name, { listing }, { dialog -> listOf(
+            "解压所选" to {
+                if (selected.isEmpty()) Toast.makeText(this, "请先长按选择文件或文件夹", Toast.LENGTH_SHORT).show()
+                else {
+                    val selection = selected.toSet()
+                    val original = entry.path.substringBeforeLast('/').ifEmpty { "/" }
+                    val opposite = if (left) rightPath else leftPath
+                    styledDialog("解压所选 ${selection.size} 项", "直接保存到所选目录，已有同名文件或文件夹时取消操作。", { chooser ->
+                        column().apply {
+                            listOf("另一侧目录" to opposite, "压缩包所在目录" to original).forEach { (label, path) ->
+                                addView(optionCard(label, path) {
+                                    chooser.dismiss()
+                                    val progress = styledDialog("正在解压", "已选 ${selection.size} 项", { text("请稍候…") }, { emptyList() })
+                                    progress.setCancelable(false); progress.setCanceledOnTouchOutside(false)
+                                    io.execute {
+                                        val result = runCatching { root.extractZipSelection(archive, path, selection) }
+                                        runOnUiThread {
+                                            if (!isDestroyed) {
+                                                progress.dismiss()
+                                                result.fold({
+                                                    selected.clear(); render()
+                                                    if (tab == 1) refreshBrowsers()
+                                                    message("解压完成", it)
+                                                }, { message("解压失败", it.message ?: "解压失败") })
+                                            }
+                                        }
+                                    }
+                                })
+                            }
+                        }
+                    }, { chooser -> listOf("取消" to { chooser.dismiss() }) })
+                }
+            },
+            "关闭" to { dialog.dismiss() }
+        ) })
+        browser.setOnKeyListener { _, code, event ->
+            if (code == KeyEvent.KEYCODE_BACK && (prefix.isNotEmpty() || selected.isNotEmpty())) {
+                if (event.action == KeyEvent.ACTION_UP) {
+                    if (prefix.isNotEmpty()) {
+                        prefix = prefix.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
+                        visibleCount = 200
+                    } else selected.clear()
+                    render()
+                }
+                true
+            } else false
+        }
+        browser.setOnDismissListener {
+            if (!io.isShutdown) io.execute { archive.parentFile!!.deleteRecursively() }
+            else archive.parentFile!!.deleteRecursively()
+        }
     }
 
     private fun executionPage() {
@@ -1044,7 +1228,9 @@ class MainActivity : Activity() {
             setPadding(dp(4), dp(4), dp(4), dp(16))
         })
         val scroll = ScrollView(this).apply { addView(content(dialog)); clipToPadding = false }
-        body.addView(scroll, LinearLayout.LayoutParams(-1, -2, 1f))
+        body.addView(scroll, LinearLayout.LayoutParams(-1, -2, 1f).apply {
+            if (subtitle.isBlank()) topMargin = dp(12)
+        })
         val footer = LinearLayout(this)
         actions(dialog).forEach { (label, action) ->
             footer.addView(button(label, action), LinearLayout.LayoutParams(0, dp(50), 1f))
@@ -1054,6 +1240,8 @@ class MainActivity : Activity() {
         dialog.setCanceledOnTouchOutside(true)
         dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
         dialog.show()
+        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        dialog.window?.setDimAmount(0.6f)
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels - dp(32), dp(480)), -2)
         return dialog
@@ -1664,13 +1852,18 @@ class MainActivity : Activity() {
         val area = column(); area.addView(text("设置", 25f)); area.addView(text("显示与终端", 13f, accent))
         val quickHome = prefs.getBoolean("homeDefaultQuickInterface", prefs.getBoolean("quickInterface", false))
         area.addView(button("首页默认 · ${if (quickHome) "快捷版" else "完整版"}") {
-            AlertDialog.Builder(this).setTitle("首页默认界面")
-                .setSingleChoiceItems(arrayOf("完整版", "快捷版"), if (quickHome) 1 else 0) { dialog, index ->
-                    val quick = index == 1
-                    prefs.edit().putBoolean("homeDefaultQuickInterface", quick).putBoolean("quickInterface", quick).apply()
-                    dialog.dismiss()
-                    showTab()
-                }.setNegativeButton("取消", null).show()
+            styledDialog("首页默认界面", "启动应用时优先打开的界面", { dialog ->
+                column().apply {
+                    listOf("完整版" to "文件管理、输入方案与完整终端", "快捷版" to "选择快捷方式，快速启动执行").forEachIndexed { index, (label, detail) ->
+                        addView(optionCard(label, detail, quickHome == (index == 1)) {
+                            val quick = index == 1
+                            prefs.edit().putBoolean("homeDefaultQuickInterface", quick).putBoolean("quickInterface", quick).apply()
+                            dialog.dismiss()
+                            showTab()
+                        })
+                    }
+                }
+            }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
         val rememberByDefault = prefs.getBoolean("defaultRememberInput", false)
         area.addView(button("默认记忆输入 · ${if (rememberByDefault) "开" else "关"}") {
@@ -1690,15 +1883,37 @@ class MainActivity : Activity() {
         modeSelector = button(modeText()) { chooseMode() }
         area.addView(modeSelector)
         area.addView(button("主题 · " + when (prefs.getString("theme", "system")) { "dark" -> "深色"; "light" -> "浅色"; else -> "跟随系统" }) {
-            AlertDialog.Builder(this).setTitle("主题").setItems(arrayOf("跟随系统", "深色", "浅色")) { _, i ->
-                prefs.edit().putString("theme", arrayOf("system", "dark", "light")[i]).apply(); recreate()
-            }.show()
+            val themes = listOf(Triple("system", "跟随系统", "自动使用设备的外观设置"),
+                Triple("dark", "深色", "深蓝灰背景，适合暗光环境"), Triple("light", "浅色", "明亮背景，适合日间阅读"))
+            styledDialog("主题", "选择应用的显示外观", { dialog ->
+                column().apply {
+                    themes.forEach { (key, label, detail) ->
+                        addView(optionCard(label, detail, prefs.getString("theme", "system") == key) {
+                            prefs.edit().putString("theme", key).apply(); dialog.dismiss(); recreate()
+                        })
+                    }
+                }
+            }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
         area.addView(button("终端字体 · ${prefs.getInt("fontSize", 14)}") {
             val sizes = arrayOf(12, 14, 16, 18, 20)
-            AlertDialog.Builder(this).setTitle("终端字体大小").setItems(sizes.map { "$it" }.toTypedArray()) { _, i ->
-                prefs.edit().putInt("fontSize", sizes[i]).apply(); terminal?.evaluateJavascript("window.setSize(${sizes[i]})", null); showTab()
-            }.show()
+            styledDialog("终端字体大小", "选择字号 · 下方文字为大小预览", { dialog ->
+                column().apply {
+                    sizes.forEach { size ->
+                        addView(optionCard("$size", "", prefs.getInt("fontSize", 14) == size) {
+                            prefs.edit().putInt("fontSize", size).apply()
+                            terminal?.evaluateJavascript("window.setSize($size)", null)
+                            dialog.dismiss(); showTab()
+                        }.apply {
+                            addView(text("Tubing 终端 / $ echo hello", size.toFloat(), mutedColor()).apply {
+                                typeface = Typeface.MONOSPACE
+                                setPadding(0, dp(8), 0, 0)
+                                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                            })
+                        })
+                    }
+                }
+            }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
         area.addView(Switch(this).apply {
             text = "执行结束后自动保存日志"; setTextColor(this@MainActivity.foreground); isChecked = prefs.getBoolean("saveLogs", true)
@@ -1708,7 +1923,7 @@ class MainActivity : Activity() {
         area.addView(button("执行历史保留 · ${ExecutionHistory.limit(this)} 次") { editExecutionHistoryLimit() })
         area.addView(text("Root 状态 · 已授权"))
         area.addView(button("重新检查 Root") { checkRoot() })
-        area.addView(button("查看执行日志") { work({ root.logs() }) { message("执行日志", it.output.ifBlank { "暂无日志" }) } })
+        area.addView(button("查看执行日志") { work({ root.logs() }) { showExecutionLogs(it.output) } })
         area.addView(button("清理临时文件") {
             if (SessionState.running) message("暂时无法清理", "请在执行结束后清理临时文件。")
             else work({ root.cleanTmp() }) { message("清理临时文件", if (it.code == 0) "清理完成" else it.output) }
@@ -1720,17 +1935,21 @@ class MainActivity : Activity() {
         content.addView(ScrollView(this).apply { addView(area) }, FrameLayout.LayoutParams(-1, -1))
     }
     private fun editExecutionHistoryLimit() {
-        val input = EditText(this).apply {
+        val input = formInput("保留次数", ExecutionHistory.limit(this).toString()).apply {
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
             setSingleLine(true)
-            setText(ExecutionHistory.limit(this@MainActivity).toString())
             selectAll()
         }
-        val dialog = AlertDialog.Builder(this).setTitle("执行历史保留次数")
-            .setMessage("默认 50 次。调小后只保留最近记录，超出部分将删除。")
-            .setView(input).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        styledDialog("执行历史保留次数", "", {
+            column().apply {
+                addView(text("默认保留 50 次。调小后只保留最近记录，超出部分将删除。", 14f, mutedColor()))
+                addView(text("保留次数", 13f, accent))
+                addView(input)
+                addView(text("请输入大于 0 的整数", 12f, mutedColor()))
+            }
+        }, { dialog -> listOf(
+            "取消" to { dialog.dismiss() },
+            "保存" to {
                 val limit = input.text.toString().toIntOrNull()
                 if (limit == null || limit < 1) {
                     input.error = "请输入大于 0 的整数"
@@ -1740,8 +1959,7 @@ class MainActivity : Activity() {
                     showTab()
                 }
             }
-        }
-        dialog.show()
+        ) })
     }
     private fun openExternalLink(url: String) {
         try {
@@ -1771,7 +1989,33 @@ class MainActivity : Activity() {
         }
     }
     private fun displayName(uri: Uri): String = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "未命名"
-    private fun message(title: String, body: String) { if (!isDestroyed) AlertDialog.Builder(this).setTitle(title).setMessage(body).setPositiveButton("确定", null).show() }
+    private fun showExecutionLogs(raw: String) {
+        if (isDestroyed) return
+        val log = LogDisplay.clean(raw).ifBlank { "暂无日志" }
+        styledDialog("执行日志", "每个日志文件显示最近 200 行 · 长按可选择文本", {
+            text(log, prefs.getInt("fontSize", 14).toFloat()).apply {
+                typeface = Typeface.MONOSPACE
+                setTextIsSelectable(true)
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                setLineSpacing(dp(3).toFloat(), 1f)
+                background = GradientDrawable().apply {
+                    setColor(this@MainActivity.background); cornerRadius = dp(12).toFloat()
+                }
+            }
+        }, { dialog -> listOf(
+            "复制日志" to {
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("执行日志", log))
+                Toast.makeText(this, "日志已复制", Toast.LENGTH_SHORT).show()
+            },
+            "关闭" to { dialog.dismiss() }
+        ) })
+    }
+    private fun message(title: String, body: String) {
+        if (!isDestroyed) styledDialog(title, "", {
+            text(body, 15f).apply { setLineSpacing(dp(3).toFloat(), 1f); setTextIsSelectable(true) }
+        }, { dialog -> listOf("确定" to { dialog.dismiss() }) })
+    }
     private fun <T> work(task: () -> T, done: (T) -> Unit) { io.execute { try { val value = task(); runOnUiThread { if (!isDestroyed) done(value) } } catch (e: Exception) { runOnUiThread { message("操作失败", e.message ?: "未知错误") } } } }
     override fun onConfigurationChanged(newConfig: Configuration) { super.onConfigurationChanged(newConfig); if (prefs.getString("theme", "system") == "system") recreate() }
     override fun onBackPressed() {

@@ -92,6 +92,96 @@ class RootExecutor {
     fun copyPath(source: String, destinationDirectory: String): CommandResult = transferPath("cp -R", source, destinationDirectory)
     fun movePath(source: String, destinationDirectory: String): CommandResult = transferPath("mv", source, destinationDirectory)
 
+    /** Copy a stable private snapshot; its owner must remove the parent directory when finished. */
+    fun prepareZip(source: String, cache: File): File {
+        require(validPath(source)) { "ZIP 路径无效" }
+        val staging = File(cache, "unzip-${UUID.randomUUID()}")
+        check(staging.mkdir()) { "无法创建临时目录" }
+        try {
+            val archive = File(staging, "archive.zip")
+            val copied = run("""
+                set -eu
+                s=${quote(source)}; f=${quote(archive.absolutePath)}
+                [ -f "${'$'}s" ] && [ ! -L "${'$'}s" ] || { echo 'ZIP 文件不存在或为符号链接'; exit 46; }
+                [ "${'$'}(stat -c %s "${'$'}s")" -le ${ZipExtractor.MAX_ARCHIVE_BYTES} ] || { echo 'ZIP 文件超过 512 MB'; exit 47; }
+                cp -- "${'$'}s" "${'$'}f"
+                chown ${android.os.Process.myUid()} "${'$'}f"
+                chmod 600 "${'$'}f"
+            """.trimIndent())
+            check(copied.code == 0) { copied.output.ifBlank { "无法读取 ZIP 文件" } }
+            require(archive.length() <= ZipExtractor.MAX_ARCHIVE_BYTES) { "ZIP 文件超过 512 MiB" }
+            return archive
+        } catch (error: Exception) {
+            staging.deleteRecursively()
+            throw error
+        }
+    }
+
+    /** Extract privately first, then publish into a newly created directory; never merge existing files. */
+    fun extractZip(source: String, parent: String, folder: String, cache: File): String {
+        require(validPath(parent) && validLeafName(folder)) { "解压路径或文件夹名称无效" }
+        val archive = prepareZip(source, cache)
+        val staging = archive.parentFile!!
+        try {
+            val output = File(staging, "output")
+            val count = ZipExtractor.extract(archive, output)
+            val published = run("""
+                set -eu
+                cd -- ${quote(parent)}
+                target=${quote("./$folder")}
+                [ ! -e "${'$'}target" ] && [ ! -L "${'$'}target" ] || { echo '目标已存在，请更换文件夹名称'; exit 49; }
+                mkdir -- "${'$'}target"
+                trap 'rm -rf -- "${'$'}target"' EXIT
+                cp -R -- ${quote(output.absolutePath + "/.")} "${'$'}target/"
+                trap - EXIT
+            """.trimIndent())
+            check(published.code == 0) { published.output.ifBlank { "无法保存解压文件" } }
+            return "已解压 $count 个文件\n${parent.trimEnd('/')}/$folder"
+        } finally {
+            staging.deleteRecursively()
+        }
+    }
+
+    /** Publish just the selected file/folder names directly into the requested directory. */
+    fun extractZipSelection(archive: File, parent: String, selection: Set<String>): String {
+        require(validPath(parent)) { "解压路径无效" }
+        val output = File(archive.parentFile, "selection-${UUID.randomUUID()}")
+        try {
+            val count = ZipExtractor.extract(archive, output, selection = selection)
+            val names = output.listFiles()?.map { it.name }?.sorted().orEmpty()
+            require(names.isNotEmpty() && names.all { validLeafName(it) }) { "没有可解压的条目" }
+            val stage = "./.tubing-extract-${UUID.randomUUID()}"
+            val rollback = buildString {
+                names.forEachIndexed { index, name ->
+                    append("if [ \"${'$'}m$index\" = 1 ]; then rm -rf -- ${quote("./$name")}; fi\n")
+                }
+                append("rm -rf -- ${quote(stage)}")
+            }
+            val command = buildString {
+                append("set -eu\ncd -- ${quote(parent)}\n")
+                names.forEachIndexed { index, name ->
+                    val target = quote("./$name")
+                    append("[ ! -e $target ] && [ ! -L $target ] || { echo ${quote("目标已存在：$name，请改用其他目录")}; exit 49; }\n")
+                    append("m$index=0\n")
+                }
+                append("mkdir -- ${quote(stage)}\ntrap ${quote(rollback)} EXIT\n")
+                append("cp -R -- ${quote(output.absolutePath + "/.")} ${quote("$stage/")}\n")
+                names.forEachIndexed { index, name ->
+                    val staged = quote("$stage/$name")
+                    append("mv -nT -- $staged ${quote("./$name")}\n")
+                    append("[ ! -e $staged ] && [ ! -L $staged ] || { echo '目标名称已被占用，已取消解压'; exit 49; }\n")
+                    append("m$index=1\n")
+                }
+                append("rmdir -- ${quote(stage)}\ntrap - EXIT\n")
+            }
+            val result = run(command)
+            check(result.code == 0) { result.output.ifBlank { "无法保存解压文件" } }
+            return "已解压 $count 个文件到\n$parent\n\n${names.joinToString("\n") }"
+        } finally {
+            output.deleteRecursively()
+        }
+    }
+
     private fun transferPath(command: String, source: String, destinationDirectory: String): CommandResult {
         require(validPath(source) && validPath(destinationDirectory)) { "文件路径无效" }
         require(source != "/" && source != destinationDirectory && !destinationDirectory.startsWith(source.trimEnd('/') + "/")) { "不能将目录复制到自身内部" }
