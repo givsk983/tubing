@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.5"><img alt="Release v1.3.5" src="https://img.shields.io/badge/release-v1.3.5-28B9CF?style=flat-square"></a>
+  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.6"><img alt="Release v1.3.6" src="https://img.shields.io/badge/release-v1.3.6-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yunhe4550-design/Tubing/releases/download/v1.3.5/tubing-v1.3.5.apk">下载 APK</a>
+  <a href="https://github.com/yunhe4550-design/Tubing/releases/download/v1.3.6/tubing-v1.3.6.apk">下载 APK</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.5` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.6` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -39,6 +39,8 @@
 | 会话与记录 | 默认保留最近 50 次执行，可调整保留次数并保存日志；任务被划走时尝试终止对应进程组 |
 
 点击 ZIP 可浏览内部目录、预览文件内容；长按选择文件或文件夹，再点击“解压所选”，直接解压到另一侧目录或压缩包所在目录。已有同名目标不会被覆盖。
+
+在执行页点击“导入文件 → ZIP 压缩包”，可浏览压缩包目录、预览文本或二进制内容，长按多选文件后点击“导入所选”。`.sh` 文件自动导入脚本目录，ELF 文件按文件头识别并导入二进制目录；同步路径中的 ZIP 也支持此操作。其他类型文件不能导入，不会自动执行所选内容。
 
 ## 执行路径
 
@@ -66,16 +68,16 @@
 
 ### 2. 安装测试版
 
-从 [GitHub Release](https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.5) 下载 `tubing-v1.3.5.apk`，可通过 ADB 覆盖安装并保留数据。
+从 [GitHub Release](https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.6) 下载 `tubing-v1.3.6.apk`，可通过 ADB 覆盖安装并保留数据。
 
 ```bash
-adb install -r tubing-v1.3.5.apk
+adb install -r tubing-v1.3.6.apk
 ```
 
 发布 APK 的 SHA-256：
 
 ```text
-dc65824960dbd1a5d45cc075b52756c181140e5e8aeafd4af97001e9dacb1be3
+877b3e8ce5c1d814d7878d10bc39fe8a0b372bdb6fc7a6fa5de12dce2c9d5652
 ```
 
 ### 3. 完成第一次执行
@@ -143,7 +145,7 @@ app/src/main/java/com/stealth/rootexecutor/
 
 ## 当前状态
 
-`v1.3.5` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并更新自适应图标与设置弹窗。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
+`v1.3.6` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选和分类导入 SH/ELF 文件。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
 
 ## 第三方组件与许可
 

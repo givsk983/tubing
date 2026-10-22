@@ -634,7 +634,7 @@ class MainActivity : Activity() {
         ) })
     }
 
-    private fun openZipBrowser(left: Boolean, entry: BrowserEntry) {
+    private fun openZipBrowser(left: Boolean, entry: BrowserEntry, importMode: Boolean = false) {
         val loading = styledDialog("正在打开 ZIP", entry.name, { text("读取文件目录，请稍候…", 14f) }, { emptyList() })
         loading.setCancelable(false); loading.setCanceledOnTouchOutside(false)
         io.execute {
@@ -648,21 +648,22 @@ class MainActivity : Activity() {
                     result.getOrNull()?.first?.parentFile?.deleteRecursively()
                 } else {
                     loading.dismiss()
-                    result.fold({ (archive, items) -> showZipBrowser(left, entry, archive, items) },
+                    result.fold({ (archive, items) -> showZipBrowser(left, entry, archive, items, importMode) },
                         { message("无法打开 ZIP", it.message ?: "压缩包损坏或格式不受支持") })
                 }
             }
         }
     }
 
-    private fun showZipBrowser(left: Boolean, entry: BrowserEntry, archive: File, items: List<ZipItem>) {
+    private fun showZipBrowser(left: Boolean, entry: BrowserEntry, archive: File, items: List<ZipItem>, importMode: Boolean = false) {
         var prefix = ""
         var visibleCount = 200
         val selected = linkedSetOf<String>()
         val listing = column()
         fun render() {
             listing.removeAllViews()
-            listing.addView(text("压缩包内：/${prefix}\n已选 ${selected.size} 项 · 长按选择，点击文件预览", 12f, mutedColor()))
+            listing.addView(text("压缩包内：/${prefix}\n已选 ${selected.size} 项 · 长按选择，点击文件预览" +
+                if (importMode) "\n选择 .sh 脚本或 ELF 二进制文件后点击导入所选" else "", 12f, mutedColor()))
             val navigation = LinearLayout(this)
             if (prefix.isNotEmpty()) navigation.addView(button("↑ 上级") {
                 prefix = prefix.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
@@ -693,6 +694,10 @@ class MainActivity : Activity() {
                     }
                 }
                 card.setOnLongClickListener {
+                    if (importMode && item.directory) {
+                        Toast.makeText(this, "请进入目录选择具体文件", Toast.LENGTH_SHORT).show()
+                        return@setOnLongClickListener true
+                    }
                     if (!selected.add(item.path)) selected.remove(item.path)
                     card.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                     render(); true
@@ -704,7 +709,13 @@ class MainActivity : Activity() {
             })
         }
         render()
-        val browser = styledDialog("ZIP 文件", entry.name, { listing }, { dialog -> listOf(
+        val browser = styledDialog(if (importMode) "从 ZIP 导入" else "ZIP 文件", entry.name, { listing }, { dialog -> if (importMode) listOf(
+            "导入所选" to {
+                if (selected.isEmpty()) Toast.makeText(this, "请先选择 SH 或 ELF 文件", Toast.LENGTH_SHORT).show()
+                else importZipSelection(archive, selected.toSet()) { dialog.dismiss() }
+            },
+            "关闭" to { dialog.dismiss() }
+        ) else listOf(
             "解压所选" to {
                 if (selected.isEmpty()) Toast.makeText(this, "请先长按选择文件或文件夹", Toast.LENGTH_SHORT).show()
                 else {
@@ -804,6 +815,84 @@ class MainActivity : Activity() {
         keyBarToggle?.contentDescription = if (collapsed) "向上展开终端快捷键" else "向下收起终端快捷键"
     }
 
+    private fun openZipImport(uri: Uri, name: String) {
+        val loading = styledDialog("正在打开 ZIP", name, { text("读取文件目录，请稍候…") }, { emptyList() })
+        loading.setCancelable(false); loading.setCanceledOnTouchOutside(false)
+        io.execute {
+            val result = runCatching {
+                val staging = File(cacheDir, "zip-import-${java.util.UUID.randomUUID()}")
+                check(staging.mkdirs()) { "无法创建导入临时目录" }
+                val archive = File(staging, "archive.zip")
+                try {
+                    (contentResolver.openInputStream(uri) ?: error("无法读取 ZIP")).use { input ->
+                        archive.outputStream().use { output ->
+                            val buffer = ByteArray(32 * 1024)
+                            var total = 0L
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                total += count
+                                require(total <= ZipExtractor.MAX_ARCHIVE_BYTES) { "ZIP 文件超过 512 MiB" }
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                    }
+                    archive to ZipExtractor.inspect(archive)
+                } catch (error: Exception) { staging.deleteRecursively(); throw error }
+            }
+            runOnUiThread {
+                if (isDestroyed) result.getOrNull()?.first?.parentFile?.deleteRecursively()
+                else {
+                    loading.dismiss()
+                    result.fold({ (archive, items) ->
+                        showZipBrowser(true, BrowserEntry("", name, "f", archive.length(), 0), archive, items, importMode = true)
+                    }, { message("无法打开 ZIP", it.message ?: "压缩包损坏或格式不受支持") })
+                }
+            }
+        }
+    }
+
+    private fun importZipSelection(archive: File, selection: Set<String>, done: () -> Unit) {
+        val progress = styledDialog("正在导入", "已选 ${selection.size} 个文件", { text("校验并导入 SH / ELF 文件，请稍候…") }, { emptyList() })
+        progress.setCancelable(false); progress.setCanceledOnTouchOutside(false)
+        io.execute {
+            val result = runCatching {
+                val output = File(archive.parentFile, "selected-${java.util.UUID.randomUUID()}")
+                try {
+                    require(ZipExtractor.inspect(archive).filter { it.path in selection }.none { it.directory }) { "请选择具体文件，不能导入目录" }
+                    ZipExtractor.extract(archive, output, selection = selection)
+                    val files = output.listFiles()?.toList().orEmpty()
+                    // Validate every selection before publishing any file to the managed directories.
+                    val candidates = files.map { it to ZipExtractor.importKind(it) }
+                    val imported = mutableListOf<ManagedFile>()
+                    val failures = mutableListOf<String>()
+                    candidates.forEach { (file, kind) ->
+                        runCatching {
+                            val response = root.import(file, file.name, kind)
+                            check(response.code == 0) { response.output.ifBlank { "导入失败" } }
+                            val fields = response.output.lineSequence().firstOrNull { it.startsWith("IMPORTED|") }?.split('|')
+                            check(fields?.size == 3) { "未收到导入确认" }
+                            ManagedFile(fields!![1], fields[2], "777")
+                        }.fold({ imported.add(it) }, { failures.add("${file.name}：${it.message}") })
+                    }
+                    imported to failures
+                } finally { output.deleteRecursively() }
+            }
+            runOnUiThread {
+                if (!isDestroyed) {
+                    progress.dismiss()
+                    result.fold({ (imported, failures) ->
+                        if (imported.isNotEmpty()) {
+                            selected = imported.last(); done(); tab = 0; showTab()
+                        }
+                        message(if (failures.isEmpty()) "导入完成" else "导入结果",
+                            "已导入 ${imported.size} 个文件" + if (failures.isEmpty()) "" else "\n失败 ${failures.size} 个：\n${failures.joinToString("\n")}")
+                    }, { message("导入失败", it.message ?: "无法导入所选文件") })
+                }
+            }
+        }
+    }
+
     private fun showImportOptions() {
         styledDialog("导入文件", "选择文件类型或从常用目录导入", { dialog ->
             column().apply {
@@ -812,6 +901,9 @@ class MainActivity : Activity() {
                 })
                 addView(optionCard("ELF 二进制", "通过系统文件选择器导入 Android 可执行文件") {
                     dialog.dismiss(); openImportPicker(101)
+                })
+                addView(optionCard("ZIP 压缩包", "预览压缩包内容，选择 SH 脚本和 ELF 二进制导入") {
+                    dialog.dismiss(); openImportPicker(102)
                 })
                 addView(optionCard("从同步路径导入", "浏览下载、QQ、Telegram 等已保存路径") {
                     dialog.dismiss(); chooseSyncSource()
@@ -969,6 +1061,10 @@ class MainActivity : Activity() {
 
     private fun chooseSourceKind(path: String) {
         val name = path.substringAfterLast('/')
+        if (name.endsWith(".zip", true)) {
+            openZipBrowser(true, BrowserEntry(path, name, "f", 0, 0), importMode = true)
+            return
+        }
         val options = if (name.endsWith(".sh", true)) arrayOf("导入为 SH 脚本") else arrayOf("导入为 ELF 二进制", "导入为 SH 脚本")
         styledDialog("选择导入类型", name, { dialog ->
             column().apply {
@@ -1971,11 +2067,18 @@ class MainActivity : Activity() {
     @Deprecated("SAF result")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode !in 100..101 || resultCode != RESULT_OK) return
+        if (requestCode !in 100..102 || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
+        val name = runCatching { displayName(uri) }.getOrElse {
+            message("导入失败", it.message ?: "无法读取文件名"); return
+        }
+        if (requestCode == 102 || name.endsWith(".zip", true)) {
+            openZipImport(uri, name)
+            return
+        }
         val kind = if (requestCode == 100) "scripts" else "binaries"
         work({
-            val name = displayName(uri); val temp = File.createTempFile("incoming-", ".tmp", cacheDir)
+            val temp = File.createTempFile("incoming-", ".tmp", cacheDir)
             try {
                 (contentResolver.openInputStream(uri) ?: error("无法读取文件")).use { input -> temp.outputStream().use { input.copyTo(it) } }
                 if (kind == "scripts") require(name.endsWith(".sh", true)) { "请选择 .sh 脚本" }

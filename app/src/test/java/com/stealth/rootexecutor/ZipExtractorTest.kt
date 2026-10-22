@@ -158,4 +158,30 @@ class ZipExtractorTest {
         rejects { ZipExtractor.inspect(archive("a" to "file", "a/b" to "nested")) }
         rejects { ZipExtractor.inspect(archive("a//file" to "bad")) }
     }
+
+    @Test fun selectedScriptsAndBinariesKeepTheirContentsAndImportKinds() {
+        val binary = "\u007fELF\u0000\u0001\u0002"
+        val zip = archive("脚本/运行.SH" to "#!/system/bin/sh\necho hello", "arm64/tool" to binary,
+            "readme.txt" to "skip", "other/unused.sh" to "skip")
+        val output = File(temp.root, "imported")
+        assertEquals(2, ZipExtractor.extract(zip, output, selection = setOf("脚本/运行.SH", "arm64/tool")))
+        assertEquals(setOf("运行.SH", "tool"), output.list()!!.toSet())
+        assertEquals("scripts", ZipExtractor.importKind(File(output, "运行.SH")))
+        assertEquals("binaries", ZipExtractor.importKind(File(output, "tool")))
+        assertArrayEquals(binary.toByteArray(), File(output, "tool").readBytes())
+    }
+
+    @Test fun importClassificationChecksElfMagicAndRejectsOtherFiles() {
+        val file = File(temp.root, "program.bin")
+        file.writeText("not an ELF")
+        rejects { ZipExtractor.importKind(file) }
+        file.writeBytes(byteArrayOf(127, 69, 76))
+        rejects { ZipExtractor.importKind(file) }
+        file.writeBytes(byteArrayOf(127, 69, 76, 70, 0))
+        assertEquals("binaries", ZipExtractor.importKind(file))
+        val disguised = File(temp.root, "program.sh").apply { writeBytes(file.readBytes()) }
+        assertEquals("binaries", ZipExtractor.importKind(disguised))
+        val empty = File(temp.root, "empty.txt").apply { writeText("") }
+        rejects { ZipExtractor.importKind(empty) }
+    }
 }

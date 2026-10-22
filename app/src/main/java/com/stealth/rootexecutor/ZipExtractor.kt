@@ -82,6 +82,15 @@ internal object ZipExtractor {
         }
     }
 
+    fun importKind(file: File): String {
+        val magic = file.inputStream().use { input -> ByteArray(4).also { input.read(it) } }
+        return when {
+            magic.contentEquals(byteArrayOf(127, 69, 76, 70)) -> "binaries"
+            file.name.endsWith(".sh", true) -> "scripts"
+            else -> error("${file.name} 不是 .sh 脚本或 ELF 二进制文件")
+        }
+    }
+
     fun extract(archive: File, destination: File, maxBytes: Long = MAX_OUTPUT_BYTES, maxEntries: Int = MAX_ENTRIES,
                 selection: Set<String>? = null): Int {
         require(!destination.exists()) { "解压目录已存在" }
