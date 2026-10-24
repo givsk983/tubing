@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/tag/v1.3.8"><img alt="Release v1.3.8" src="https://img.shields.io/badge/release-v1.3.8-28B9CF?style=flat-square"></a>
+  <a href="https://github.com/givsk983/tubing/releases/tag/v1.3.9"><img alt="Release v1.3.9" src="https://img.shields.io/badge/release-v1.3.9-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/download/v1.3.8/tubing-v1.3.8.apk">下载 APK</a>
+  <a href="https://github.com/givsk983/tubing/releases/download/v1.3.9/tubing-v1.3.9.apk">下载 APK</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.8` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.9` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -42,11 +42,17 @@
 
 文件管理双栏支持左右滑动文件或文件夹进入选择模式。左滑追加当前项；第一次右滑选中当前项，后续右滑按当前列表顺序追加选中“上次右滑项到本次右滑项”的完整范围（包含两端，支持向上选）。选择模式中点按只追加选择，重复点按保持选中，不打开文件夹或 ZIP，也不改变右滑范围起点。左右栏分别记录选择，可通过“所选操作”复制或删除，多选时删除会二次确认；单选仍可重命名或解压 ZIP。点击“取消选择”或按返回键退出；进入其他目录清空该栏选择，刷新保留仍存在的已选项。
 
-在执行页点击“导入文件”，直接打开应用内文件管理，默认浏览下载目录。普通文件显示勾选标记，点按或左右滑动选择，连续右滑可范围选中，再点击底部“导入所选”批量导入。左右栏独立选择，每次导入当前栏的已选文件；进入其他目录会清空该栏选择。SH 和 ELF 统一导入 `/data/adb/root_executor` 脚本库，不再按类型分目录；失败项保留选择并显示原因，成功项不会重复导入，全部成功后返回执行页，不自动运行。
+在执行页点击“导入文件”，可选择“内置文件管理器”“MT 管理器”或“手机文件管理器”。设置页的“默认导入方式”可设为每次询问，或固定使用其中一种；临时切换来源不会改变默认设置。MT 同时支持标准版与 Canary 版，未安装时可改选其他来源。
 
-导入时点击 ZIP 可浏览压缩包目录、预览文本或二进制内容，长按多选内部文件后点击“导入所选”；已勾选 ZIP 时点击“导入所选”也会打开它，ZIP 与普通文件需分开选择。“更多导入”保留系统文件选择器和同步路径入口；底部导航栏上滑可使用收藏路径。目录与符号链接不能作为待导入文件，其他类型文件导入时显示错误。
+内置文件管理器默认浏览下载目录，每个普通文件左侧有独立勾选框，点击可选中或取消，不会打开 ZIP；左右滑动仍可选中，连续右滑可范围选中，再点击底部“导入所选”批量导入。左右栏独立选择，每次导入当前栏的已选文件；进入其他目录会清空该栏选择。SH 和 ELF 统一导入 `/data/adb/root_executor` 脚本库，不再按类型分目录；失败项保留选择并显示原因，成功项不会重复导入，全部成功后返回执行页，不自动运行。
+
+从任一来源选中 ZIP，或点击内置管理器中的 ZIP 文件名，会先显示“ZIP 导入方式”。可以将整个 ZIP 解压为一个项目，项目名称默认 ZIP 文件名去掉 `.zip`，也可手动修改；所有目录、程序和资源保存在 `/data/adb/root_executor/项目名称`，重名时拒绝覆盖。项目内的 SH / ELF 程序会出现在执行列表中，并从程序所在目录启动。也可选择“浏览并选择包内文件”，继续使用原有预览与挑选导入功能。ZIP 与普通文件需分开选择。
+
+“更多导入”可临时切换来源或选择同步路径；底部导航栏上滑可使用收藏路径。目录与符号链接不能作为普通待导入文件，其他类型文件导入时显示错误。
 
 ## 执行路径
+
+文件管理中长按普通文件，在菜单中选择“执行”，会校验 SH / ELF 后直接从原目录启动，无需先导入。项目内程序会保留项目身份；库外程序使用原路径并保留相对资源访问。非程序文件与符号链接会被拒绝，已有任务运行时不会并发启动新任务。共享存储中的 SH 使用 `sh` 读取执行；ELF 仍受目标挂载的 `noexec` 限制。
 
 <p align="center">
   <img src="./assets/readme/execution-flow.svg" width="100%" alt="tubing 从文件导入、安全校验、Root 会话到终端输出的四步执行流程">
@@ -74,10 +80,10 @@
 
 ### 2. 安装测试版
 
-从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.3.8) 下载 `tubing-v1.3.8.apk`，可通过 ADB 覆盖安装并保留数据。
+从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.3.9) 下载 `tubing-v1.3.9.apk`，可通过 ADB 覆盖安装并保留数据。
 
 ```bash
-adb install -r tubing-v1.3.8.apk
+adb install -r tubing-v1.3.9.apk
 ```
 
 发布 APK 的 SHA-256：
@@ -151,7 +157,7 @@ app/src/main/java/com/stealth/rootexecutor/
 
 ## 当前状态
 
-`v1.3.8` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选并统一导入 SH/ELF 文件。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
+`v1.3.9` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选并统一导入 SH/ELF 文件。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
 
 ## 第三方组件与许可
 
@@ -164,5 +170,5 @@ app/src/main/java/com/stealth/rootexecutor/
 
 发现兼容性问题时，请附上 Android 版本、Root 方案、所选执行模式与可脱敏的终端输出：
 
-- [GitHub Issues](https://github.com/yunhe4550-design/Tubing/issues)
+- [GitHub Issues](https://github.com/givsk983/tubing/issues)
 - [Telegram 反馈频道](https://t.me/mbazhuan)

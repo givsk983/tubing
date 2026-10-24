@@ -426,7 +426,7 @@ class MainActivity : Activity() {
                 addView(button("取消选择") { clearBrowserSelection(activeBrowserLeft) }, LinearLayout.LayoutParams(0, -1, 1f))
             }
             addView(actions, LinearLayout.LayoutParams(-1, dp(46)))
-            addView(text(if (browserImportMode) "点按勾选 · 连续右滑范围选中 · ZIP 可打开选择" else "左右滑选中 · 连续右滑范围选中 · 选择时点按追加", 11f, mutedColor()).apply {
+            addView(text(if (browserImportMode) "方框勾选 · 连续右滑范围选中 · 点 ZIP 名称打开" else "左右滑选中 · 连续右滑范围选中 · 选择时点按追加", 11f, mutedColor()).apply {
                 gravity = Gravity.CENTER_VERTICAL
             }, LinearLayout.LayoutParams(-1, dp(34)))
         }
@@ -469,19 +469,28 @@ class MainActivity : Activity() {
         filtered.forEach { entry ->
             val isSelected = entry.path in selection.selectedPaths
             val row = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL; setPadding(dp(7), dp(3), dp(5), dp(3))
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(3), dp(3), dp(5), dp(3))
                 setBackgroundColor(if (isSelected) (if (dark) Color.rgb(25, 64, 80) else Color.rgb(210, 239, 243)) else Color.TRANSPARENT)
             }
             (if (left) leftBrowserRows else rightBrowserRows)[entry.path] = row
             val icon = when { entry.type == "d" -> "📁"; entry.type == "l" -> "↪";
                 entry.name.endsWith(".zip", true) -> "📦"; entry.type == "f" -> "📄"; else -> "▪" }
-            row.addView(text("$icon  ${entry.name}", 12f, foreground).apply {
-                if (browserImportMode && entry.type == "f") {
-                    text = "☐ $text"
-                    tag = "importSelectable"
+            if (browserImportMode && entry.type == "f") row.addView(CheckBox(this).apply {
+                tag = "importSelectable"
+                isChecked = isSelected
+                contentDescription = "选择 ${entry.name}"
+                buttonTintList = android.content.res.ColorStateList.valueOf(accent)
+                setPadding(0, 0, 0, 0)
+                setOnClickListener {
+                    focusBrowser(left)
+                    selection.toggle(entry.path)
+                    updateBrowserSelection()
                 }
+            }, LinearLayout.LayoutParams(dp(40), dp(48)))
+            row.addView(text("$icon  ${entry.name}", 12f, foreground).apply {
                 maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; setPadding(0, dp(3), 0, dp(1))
-            })
+            }, LinearLayout.LayoutParams(0, -2, 1f))
             installBrowserSwipe(row, left, entry)
             row.setOnClickListener {
                 activeBrowserLeft = left
@@ -489,7 +498,7 @@ class MainActivity : Activity() {
                     navigateBrowser(left, entry.path, rememberCurrent = true)
                 } else if (browserImportMode && entry.type == "l") {
                     Toast.makeText(this, "请选择普通文件，不能导入符号链接", Toast.LENGTH_SHORT).show()
-                } else if (browserImportMode && entry.name.endsWith(".zip", true) && !selection.inSelectionMode) {
+                } else if (browserImportMode && entry.name.endsWith(".zip", true)) {
                     openZipBrowser(left, entry, importMode = true)
                 } else if (browserImportMode || selection.inSelectionMode) {
                     selection.add(entry.path)
@@ -559,9 +568,7 @@ class MainActivity : Activity() {
             (if (left) leftBrowserRows else rightBrowserRows).forEach { (path, row) ->
                 val checked = path in selectedPaths
                 row.isSelected = checked
-                row.findViewWithTag<TextView>("importSelectable")?.let { label ->
-                    label.text = (if (checked) "☑ " else "☐ ") + label.text.toString().removePrefix("☐ ").removePrefix("☑ ")
-                }
+                row.findViewWithTag<CheckBox>("importSelectable")?.isChecked = checked
                 row.setBackgroundColor(if (checked) (if (dark) Color.rgb(25, 64, 80) else Color.rgb(210, 239, 243)) else Color.TRANSPARENT)
             }
         }
@@ -733,7 +740,9 @@ class MainActivity : Activity() {
 
     private fun showEntryActions(left: Boolean, entry: BrowserEntry) {
         val actions = if (entry.type == "f" && entry.name.endsWith(".zip", true))
-            arrayOf("复制到另一侧", "重命名", "删除", "解压 ZIP") else arrayOf("复制到另一侧", "重命名", "删除")
+            arrayOf("复制到另一侧", "重命名", "删除", "解压 ZIP")
+            else if (entry.type == "f") arrayOf("复制到另一侧", "重命名", "删除", "执行")
+            else arrayOf("复制到另一侧", "重命名", "删除")
         AlertDialog.Builder(this).setTitle(entry.name).setItems(actions) { _, index ->
             when (index) {
                 0 -> {
@@ -741,13 +750,24 @@ class MainActivity : Activity() {
                     work({ root.copyPath(entry.path, destination).also { check(it.code == 0) { it.output.ifBlank { "复制失败" } } } }) { refreshBrowsers() }
                 }
                 1 -> renameBrowserEntry(left, entry)
-                3 -> showExtractZip(left, entry)
+                3 -> if (entry.name.endsWith(".zip", true)) showExtractZip(left, entry) else executeBrowserEntry(entry)
                 2 -> AlertDialog.Builder(this).setMessage(if (entry.type == "d") "删除文件夹“${entry.name}”及其全部内容？" else "删除文件“${entry.name}”？")
                     .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
                         work({ root.deletePath(entry.path, entry.type == "d").also { check(it.code == 0) { it.output.ifBlank { "删除失败" } } } }) { refreshBrowsers() }
                     }.show()
             }
         }.setNegativeButton("取消", null).show()
+    }
+
+    private fun executeBrowserEntry(entry: BrowserEntry) {
+        if (SessionState.running) { message("脚本正在运行", "请先结束当前会话。"); return }
+        work({ root.browserProgram(entry.path) }) { file ->
+            selected = file
+            browserImportMode = false
+            leftSelection.clear(); rightSelection.clear()
+            tab = 0; showTab()
+            launch()
+        }
     }
 
     private fun renameBrowserEntry(left: Boolean, entry: BrowserEntry) {
@@ -821,7 +841,10 @@ class MainActivity : Activity() {
                     result.getOrNull()?.first?.parentFile?.deleteRecursively()
                 } else {
                     loading.dismiss()
-                    result.fold({ (archive, items) -> showZipBrowser(left, entry, archive, items, importMode) },
+                    result.fold({ (archive, items) ->
+                        if (importMode) showZipImportOptions(left, entry, archive, items)
+                        else showZipBrowser(left, entry, archive, items)
+                    },
                         { message("无法打开 ZIP", it.message ?: "压缩包损坏或格式不受支持") })
                 }
             }
@@ -944,7 +967,7 @@ class MainActivity : Activity() {
     private fun executionPage() {
         val area = column()
         val actions = LinearLayout(this)
-        actions.addView(button("导入文件") { openImportBrowser() }, LinearLayout.LayoutParams(0, -2, 1f))
+        actions.addView(button("导入文件") { startImport() }, LinearLayout.LayoutParams(0, -2, 1f))
         actions.addView(button("选择文件") { chooseFile() }, LinearLayout.LayoutParams(0, -2, 1f)); area.addView(actions)
         val controls = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         controls.addView(text(if (SessionState.running) SessionState.title else selected?.name ?: "选择文件后开始执行", 12f), LinearLayout.LayoutParams(0, -2, 1f))
@@ -1018,11 +1041,77 @@ class MainActivity : Activity() {
                 else {
                     loading.dismiss()
                     result.fold({ (archive, items) ->
-                        showZipBrowser(true, BrowserEntry("", name, "f", archive.length(), 0), archive, items, importMode = true)
+                        showZipImportOptions(true, BrowserEntry("", name, "f", archive.length(), 0), archive, items)
                     }, { message("无法打开 ZIP", it.message ?: "压缩包损坏或格式不受支持") })
                 }
             }
         }
+    }
+
+    private fun discardZipSnapshot(archive: File) {
+        if (!io.isShutdown) io.execute { archive.parentFile?.deleteRecursively() }
+        else archive.parentFile?.deleteRecursively()
+    }
+
+    private fun showZipImportOptions(left: Boolean, entry: BrowserEntry, archive: File, items: List<ZipItem>) {
+        var handedOff = false
+        val chooser = styledDialog("ZIP 导入方式", entry.name, { dialog ->
+            column().apply {
+                addView(optionCard("整个 ZIP 作为项目导入", "保留所有目录、程序和资源；项目名称可修改") {
+                    handedOff = true; dialog.dismiss()
+                    showProjectImportDialog(archive, entry.name)
+                })
+                addView(optionCard("浏览并选择包内文件", "预览内容，只导入选中的 SH / ELF 文件") {
+                    handedOff = true; dialog.dismiss()
+                    showZipBrowser(left, entry, archive, items, importMode = true)
+                })
+            }
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
+        chooser.setOnDismissListener { if (!handedOff) discardZipSnapshot(archive) }
+    }
+
+    private fun showProjectImportDialog(archive: File, zipName: String) {
+        val projectName = formInput("项目名称", ProjectImport.defaultName(zipName))
+        var handedOff = false
+        val naming = styledDialog("导入 ZIP 项目", zipName, {
+            column().apply {
+                addView(projectName)
+                addView(text("完整解压到 ${root.managedRoot}/项目名称，保留包内结构与资源。不会覆盖已有项目，也不会自动执行。", 13f, mutedColor()))
+            }
+        }, { dialog -> listOf(
+            "取消" to { dialog.dismiss() },
+            "导入项目" to {
+                val name = projectName.text.toString().trim()
+                if (!ProjectImport.validName(name)) projectName.error = "请输入有效项目名称，勿使用路径或系统目录名"
+                else {
+                    handedOff = true; dialog.dismiss()
+                    val progress = styledDialog("正在导入项目", name, { text("解压完整 ZIP 并保存到脚本库，请稍候…") }, { emptyList() })
+                    progress.setCancelable(false); progress.setCanceledOnTouchOutside(false)
+                    io.execute {
+                        val result = runCatching { root.importZipProject(archive, name) }
+                        runOnUiThread {
+                            if (!isDestroyed) {
+                                progress.dismiss()
+                                result.fold({ details ->
+                                    browserImportMode = false
+                                    leftSelection.clear(); rightSelection.clear()
+                                    leftPath = "${root.managedRoot}/$name"
+                                    leftEntries = emptyList(); leftBrowserHistory.clear()
+                                    activeBrowserLeft = true; tab = 1; showTab()
+                                    message("项目导入完成", details)
+                                    discardZipSnapshot(archive)
+                                }, { error ->
+                                    // Keep the snapshot so a conflicting name can be corrected without picking again.
+                                    Toast.makeText(this, error.message ?: "无法导入 ZIP 项目", Toast.LENGTH_LONG).show()
+                                    showProjectImportDialog(archive, "$name.zip")
+                                })
+                            } else discardZipSnapshot(archive)
+                        }
+                    }
+                }
+            }
+        ) })
+        naming.setOnDismissListener { if (!handedOff) discardZipSnapshot(archive) }
     }
 
     private fun importZipSelection(archive: File, selection: Set<String>, done: () -> Unit) {
@@ -1094,7 +1183,7 @@ class MainActivity : Activity() {
         val archives = entries.filter { it.name.endsWith(".zip", true) }
         if (archives.isNotEmpty()) {
             if (entries.size == 1) openZipBrowser(left, archives.single(), importMode = true)
-            else message("请单独选择 ZIP", "ZIP 需打开后选择内部文件导入，请将压缩包与普通文件分开选择。")
+            else message("请单独选择 ZIP", "ZIP 可以整包导入为项目，或浏览后选择内部文件。请将不同 ZIP 和普通文件分开导入。")
             return
         }
         val progress = styledDialog("正在导入", "已选 ${entries.size} 个文件", { text("校验并导入 SH / ELF 文件，请稍候…") }, { emptyList() })
@@ -1127,15 +1216,57 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showSystemImportOptions() {
-        styledDialog("导入文件", "选择文件类型或从常用目录导入", { dialog ->
+    private fun startImport() = openImportSource(ImportSource.fromKey(prefs.getString("importSource", "ask")))
+
+    private fun openImportSource(source: ImportSource) {
+        when (source) {
+            ImportSource.ASK -> showSystemImportOptions()
+            ImportSource.BUILTIN -> openImportBrowser()
+            ImportSource.MT -> {
+                val picker = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                val targetPackage = listOf("bin.mt.plus", "bin.mt.plus.canary").firstOrNull { name ->
+                    picker.setPackage(name).resolveActivity(packageManager) != null
+                }
+                if (targetPackage == null) {
+                    Toast.makeText(this, "未找到支持文件选择的 MT 管理器，请选择其他方式", Toast.LENGTH_LONG).show()
+                    showSystemImportOptions()
+                } else {
+                    picker.setPackage(targetPackage)
+                    try { startActivityForResult(picker, 100) }
+                    catch (_: android.content.ActivityNotFoundException) { showSystemImportOptions() }
+                }
+            }
+            ImportSource.PHONE -> openImportPicker(100)
+        }
+    }
+
+    private fun chooseDefaultImportSource() {
+        val current = ImportSource.fromKey(prefs.getString("importSource", "ask"))
+        styledDialog("默认导入方式", "每次询问，或始终使用指定的文件管理器。导入页面可临时切换来源。", { dialog ->
             column().apply {
-                addView(optionCard("选择程序", "通过系统文件选择器导入 SH / ELF，统一保存到脚本库") {
-                    dialog.dismiss(); openImportPicker(100)
-                })
-                addView(optionCard("ZIP 压缩包", "预览压缩包内容，选择 SH 脚本和 ELF 二进制导入") {
-                    dialog.dismiss(); openImportPicker(102)
-                })
+                ImportSource.entries.forEach { source ->
+                    addView(optionCard(source.label, if (source == ImportSource.ASK) "每次导入时手动选择来源" else "点击导入文件后直接打开", current == source) {
+                        prefs.edit().putString("importSource", source.key).apply()
+                        dialog.dismiss(); showTab()
+                    })
+                }
+            }
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
+    }
+
+    private fun showSystemImportOptions() {
+        styledDialog("导入文件", "选择导入来源 · 可在设置中指定默认方式", { dialog ->
+            column().apply {
+                listOf(ImportSource.BUILTIN, ImportSource.MT, ImportSource.PHONE).forEach { source ->
+                    addView(optionCard(source.label, when (source) {
+                        ImportSource.BUILTIN -> "应用内双栏浏览，勾选、滑动和范围多选"
+                        ImportSource.MT -> "调用已安装的 MT 管理器选择程序或 ZIP"
+                        else -> "调用手机系统文件选择器选择程序或 ZIP"
+                    }) { dialog.dismiss(); openImportSource(source) })
+                }
                 addView(optionCard("从同步路径导入", "浏览下载、QQ、Telegram 等已保存路径") {
                     dialog.dismiss(); chooseSyncSource()
                 })
@@ -1144,9 +1275,14 @@ class MainActivity : Activity() {
     }
 
     private fun openImportPicker(requestCode: Int) {
-        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
-        }, requestCode)
+        try {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }, requestCode)
+        } catch (_: android.content.ActivityNotFoundException) {
+            message("无法打开手机文件管理器", "手机未提供文件选择入口，请使用内置文件管理器或 MT 管理器。")
+        }
     }
 
     private fun syncSources(): MutableList<SyncSource> {
@@ -1879,7 +2015,7 @@ class MainActivity : Activity() {
             }
         }, { dialog -> listOf(
             "选择此脚本" to {
-                work({ root.list() }) { (result, files) ->
+                work({ if (file.kind == "external") CommandResult(0, "") to listOf(root.browserProgram(file.name)) else root.list() }) { (result, files) ->
                     if (result.code != 0) message("读取脚本失败", result.output)
                     else {
                         val found = files.firstOrNull { it.kind == file.kind && it.name == file.name }
@@ -2165,6 +2301,7 @@ class MainActivity : Activity() {
     }
     private fun settingsPage() {
         val area = column(); area.addView(text("设置", 25f)); area.addView(text("显示与终端", 13f, accent))
+        area.addView(button("默认导入方式 · ${ImportSource.fromKey(prefs.getString("importSource", "ask")).label}") { chooseDefaultImportSource() })
         val quickHome = prefs.getBoolean("homeDefaultQuickInterface", prefs.getBoolean("quickInterface", false))
         area.addView(button("首页默认 · ${if (quickHome) "快捷版" else "完整版"}") {
             styledDialog("首页默认界面", "启动应用时优先打开的界面", { dialog ->
@@ -2245,7 +2382,8 @@ class MainActivity : Activity() {
         })
         area.addView(text("反馈与项目", 13f, accent))
         area.addView(button("反馈频道 · Telegram") { openExternalLink("https://t.me/mbazhuan") })
-        area.addView(button("GitHub 仓库") { openExternalLink("https://github.com/yunhe4550-design/Tubing") })
+        area.addView(button("GitHub 仓库") { openExternalLink("https://github.com/givsk983/tubing") })
+        area.addView(button("旧 GitHub 仓库（账号申诉中）") { openExternalLink("https://github.com/yunhe4550-design/Tubing") })
         area.addView(text("Tubing ${packageManager.getPackageInfo(packageName, 0).versionName}\nRoot 交互终端", 12f))
         content.addView(ScrollView(this).apply { addView(area) }, FrameLayout.LayoutParams(-1, -1))
     }
@@ -2291,7 +2429,8 @@ class MainActivity : Activity() {
         val name = runCatching { displayName(uri) }.getOrElse {
             message("导入失败", it.message ?: "无法读取文件名"); return
         }
-        if (requestCode == 102 || name.endsWith(".zip", true)) {
+        if (requestCode == 102 || name.endsWith(".zip", true) ||
+            runCatching { contentResolver.getType(uri) }.getOrNull() in setOf("application/zip", "application/x-zip-compressed")) {
             openZipImport(uri, name)
             return
         }
@@ -2309,7 +2448,11 @@ class MainActivity : Activity() {
             tab = 0; showTab(); message("导入完成", selected?.name ?: "文件已导入")
         }
     }
-    private fun displayName(uri: Uri): String = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "未命名"
+    private fun displayName(uri: Uri): String = runCatching {
+        contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0) else null
+        }
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "未命名"
     private fun showExecutionLogs(raw: String) {
         if (isDestroyed) return
         val log = LogDisplay.clean(raw).ifBlank { "暂无日志" }

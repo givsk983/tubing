@@ -18,6 +18,11 @@ internal class BrowserSelection {
         paths.add(path)
     }
 
+    fun toggle(path: String) {
+        inSelectionMode = true
+        if (!paths.add(path)) paths.remove(path)
+    }
+
     fun swipe(path: String, right: Boolean, visiblePaths: List<String>) {
         val end = visiblePaths.indexOf(path)
         if (end < 0) return

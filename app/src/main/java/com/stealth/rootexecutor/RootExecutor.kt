@@ -142,6 +142,33 @@ class RootExecutor {
         }
     }
 
+    /** Preserve the whole archive as one project, publishing only after extraction succeeds. */
+    fun importZipProject(archive: File, projectName: String): String {
+        require(ProjectImport.validName(projectName)) { "项目名称无效，请勿使用系统目录名、隐藏名称或路径分隔符" }
+        val output = File(archive.parentFile, "project-${UUID.randomUUID()}")
+        try {
+            val count = ZipExtractor.extract(archive, output)
+            val stage = ".tubing-project-${UUID.randomUUID()}"
+            val target = quote("./$projectName")
+            val staged = quote("./$stage")
+            val response = run("""
+                set -eu
+                [ -d ${quote(base)} ] && [ ! -L ${quote(base)} ] || { echo '脚本库目录异常'; exit 32; }
+                cd -- ${quote(base)}
+                [ ! -e $target ] && [ ! -L $target ] || { echo '项目名称已存在，请更换名称'; exit 49; }
+                mkdir -- $staged
+                trap ${quote("rm -rf -- $staged")} EXIT
+                cp -R -- ${quote(output.absolutePath + "/.")} $staged/
+                chmod -R 755 $staged
+                mv -nT -- $staged $target
+                [ ! -e $staged ] && [ ! -L $staged ] || { echo '项目名称已被占用，已取消导入'; exit 49; }
+                trap - EXIT
+            """.trimIndent())
+            check(response.code == 0) { response.output.ifBlank { "无法保存项目" } }
+            return "已导入 $count 个文件\n$base/$projectName"
+        } finally { output.deleteRecursively() }
+    }
+
     /** Publish just the selected file/folder names directly into the requested directory. */
     fun extractZipSelection(archive: File, parent: String, selection: Set<String>): String {
         require(validPath(parent)) { "解压路径无效" }
@@ -246,6 +273,37 @@ class RootExecutor {
         return importSource(sourcePath, originalName, kind)
     }
 
+    fun browserProgram(path: String): ManagedFile {
+        browserFile(path)
+        val header = run("""
+            set -eu
+            f=${quote(path)}
+            [ -f "${'$'}f" ] && [ ! -L "${'$'}f" ] || { echo '请选择普通 SH / ELF 文件'; exit 46; }
+            resolved=${'$'}(readlink -f "${'$'}f")
+            printf '%s' "${'$'}resolved" | base64 | tr -d '\n'
+            printf '\n'
+            head -c 4 "${'$'}resolved" | base64
+        """.trimIndent())
+        check(header.code == 0) { header.output.ifBlank { "无法读取程序" } }
+        val lines = header.output.lineSequence().toList()
+        val resolved = Base64.decode(lines.first(), Base64.DEFAULT).toString(Charsets.UTF_8)
+        ZipExtractor.importKind(path.substringAfterLast('/'), Base64.decode(lines.getOrElse(1) { "" }, Base64.DEFAULT))
+        return browserFile(resolved)
+    }
+
+    fun browserFile(path: String): ManagedFile {
+        val relative = path.removePrefix("$base/")
+        val parts = relative.split('/')
+        val file = when {
+            path.startsWith("$base/") && parts.size == 1 -> ManagedFile("library", relative, "")
+            path.startsWith("$base/") && parts.size == 2 && parts[0] in setOf("scripts", "binaries") -> ManagedFile(parts[0], parts[1], "")
+            path.startsWith("$base/") && ProjectImport.validRelativeProgram(relative) -> ManagedFile("project", relative, "")
+            else -> ManagedFile("external", path, "")
+        }
+        filePath(file)
+        return file
+    }
+
     fun importSource(sourcePath: String, originalName: String, kind: String): CommandResult {
         require(kind == "scripts" || kind == "binaries")
         require(sourcePath.startsWith('/') && !sourcePath.contains('\u0000')) { "源文件路径无效" }
@@ -273,20 +331,35 @@ class RootExecutor {
     fun list(): Pair<CommandResult, List<ManagedFile>> {
         val result = run("""
             set -eu
-            for k in library scripts binaries; do
-              if [ "${'$'}k" = library ]; then d=$base; else d=$base/${'$'}k; fi
-              [ -d "${'$'}d" ] && [ ! -L "${'$'}d" ] || continue
-              find "${'$'}d" -mindepth 1 -maxdepth 1 -type f | while IFS= read -r f; do
+            emit_files() {
+              k="${'$'}1"; d="${'$'}2"; depth="${'$'}3"
+              find "${'$'}d" -mindepth 1 -maxdepth "${'$'}depth" -type f | while IFS= read -r f; do
                 n=${'$'}{f##*/}
                 case "${'$'}n" in *.[sS][hH]) ;; *)
                   [ "${'$'}(head -c 4 "${'$'}f" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ] || continue ;;
                 esac
-                printf '%s|%s|%s\n' "${'$'}k" "${'$'}{f##*/}" "${'$'}(stat -c %a "${'$'}f")"
+                if [ "${'$'}k" = project ]; then n=${'$'}{f#${base}/}; fi
+                encoded=${'$'}(printf '%s' "${'$'}n" | base64 | tr -d '\n')
+                printf '%s|%s|%s\n' "${'$'}k" "${'$'}encoded" "${'$'}(stat -c %a "${'$'}f")"
               done
+            }
+            for k in library scripts binaries; do
+              if [ "${'$'}k" = library ]; then d=$base; else d=$base/${'$'}k; fi
+              [ -d "${'$'}d" ] && [ ! -L "${'$'}d" ] || continue
+              emit_files "${'$'}k" "${'$'}d" 1
+            done
+            find ${quote(base)} -mindepth 1 -maxdepth 1 -type d | while IFS= read -r project; do
+              case "${'$'}{project##*/}" in logs|tmp|scripts|binaries|.*) continue ;; esac
+              emit_files project "${'$'}project" 128
             done
         """.trimIndent())
         val files = result.output.lineSequence().mapNotNull { line ->
-            val a = line.split('|'); if (a.size == 3 && a[0] in setOf("library", "scripts", "binaries") && validName(a[1])) ManagedFile(a[0], a[1], a[2]) else null
+            val a = line.split('|')
+            if (a.size != 3) return@mapNotNull null
+            runCatching {
+                val name = Base64.decode(a[1], Base64.DEFAULT).toString(Charsets.UTF_8)
+                ManagedFile(a[0], name, a[2]).also { filePath(it) }
+            }.getOrNull()
         }.sortedWith(compareBy<ManagedFile> { it.name.lowercase() }.thenBy { it.kind }).toList()
         return result to files
     }
@@ -298,18 +371,31 @@ class RootExecutor {
 
     /** Legacy identities stay stable for shortcuts, presets and remembered inputs. */
     fun filePath(file: ManagedFile): String {
+        if (file.kind == "external") {
+            require(validPath(file.name) && file.name.length <= 4096 && file.name.split('/').drop(1).all { validName(it) }) { "程序路径无效" }
+            return file.name
+        }
+        if (file.kind == "project") {
+            require(ProjectImport.validRelativeProgram(file.name)) { "项目文件路径无效" }
+            return "$base/${file.name}"
+        }
         require(validName(file.name) && file.kind in setOf("library", "scripts", "binaries"))
         return if (file.kind == "library") "$base/${file.name}" else "$base/${file.kind}/${file.name}"
     }
 
     fun logs(): CommandResult = run("find ${quote("$base/logs")} -maxdepth 1 -type f -name '*.log' -print -exec tail -n 200 {} \\;")
     fun cleanTmp(): CommandResult = run("[ -d ${quote("$base/tmp")} ] && [ ! -L ${quote("$base/tmp")} ] && find ${quote("$base/tmp")} -mindepth 1 -maxdepth 1 -type f -delete")
-    private fun validName(name: String) = name.matches(Regex("[\\p{L}\\p{N}._ -]{1,160}")) && name != "." && name != ".."
+    private fun validName(name: String) = validLeafName(name) && name.length <= 255 && name.none { it.isISOControl() }
 
     fun sessionCommand(file: ManagedFile, slave: String?, token: String): String {
         val path = filePath(file)
         require((slave == null || slave.matches(Regex("/dev/pts/[0-9]+"))) && token.matches(Regex("[a-f0-9-]+")))
         val directory = path.substringBeforeLast('/')
+        val directories = when (file.kind) {
+            "project" -> file.name.split('/').dropLast(1).runningFold(base) { parent, part -> "$parent/$part" }
+            "external" -> file.name.split('/').filter { it.isNotEmpty() }.dropLast(1).runningFold("") { parent, part -> "$parent/$part" }.filter { it.isNotEmpty() } + base
+            else -> listOf(base, directory)
+        }
         val launch = """
             if [ "${'$'}(head -c 4 ${quote(path)} | od -An -tx1 | tr -d ' \n')" = 7f454c46 ]; then
                 ${quote(path)}
@@ -333,16 +419,21 @@ class RootExecutor {
         return """
             set -eu
             [ "${'$'}(id -u)" = 0 ] || { echo 'Root 授权已失效'; exit 40; }
-            for d in $base ${quote(directory)} $base/logs $base/tmp; do
+            for d in ${directories.joinToString(" ") { quote(it) }} $base/logs $base/tmp; do
               [ -d "${'$'}d" ] && [ ! -L "${'$'}d" ] || { echo '执行目录异常'; exit 32; }
             done
             f=${quote(path)}
             [ -f "${'$'}f" ] && [ ! -L "${'$'}f" ] || { echo '文件不存在或为符号链接'; exit 35; }
+            magic=${'$'}(head -c 4 "${'$'}f" | od -An -tx1 | tr -d ' \n')
             ${if (file.name.endsWith(".sh", true)) ":" else "[ \"\$(head -c 4 \"\$f\" | od -An -tx1 | tr -d ' \\n')\" = 7f454c46 ] || { echo '文件不是 SH 脚本或 ELF 程序'; exit 47; }"}
-            chmod 777 "${'$'}f"
-            [ "${'$'}(stat -c %a "${'$'}f")" = 777 ] || { echo '权限验证失败'; exit 38; }
             opts=${'$'}(awk -v p="${'$'}f" '(${ '$' }2=="/" || index(p,${ '$' }2 "/")==1) && length(${ '$' }2)>m {m=length(${ '$' }2);o=${ '$' }4} END{print o}' /proc/mounts)
-            case ",${'$'}opts," in *,noexec,*) echo '文件系统禁止执行（noexec）'; exit 39;; esac
+            if [ "${'$'}magic" = 7f454c46 ]; then
+                case ",${'$'}opts," in *,noexec,*) echo '文件系统禁止执行（noexec）'; exit 39;; esac
+            fi
+            if [ ${quote(file.kind)} != external ] || [ "${'$'}magic" = 7f454c46 ]; then
+                chmod 777 "${'$'}f"
+                [ "${'$'}(stat -c %a "${'$'}f")" = 777 ] || { echo '权限验证失败'; exit 38; }
+            fi
             command -v setsid >/dev/null || { echo '系统缺少 setsid，无法创建执行会话'; exit 42; }
             exec setsid -w sh -c ${quote(inner)}
         """.trimIndent()
