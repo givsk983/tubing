@@ -18,6 +18,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
         val fixture = File(targetContext.cacheDir, "smoke-$id").apply { mkdirs() }
         val imported = mutableListOf<ManagedFile>()
         val tokens = mutableListOf<String>()
+        val createdLegacyDirectories = mutableListOf<String>()
         val checks = mutableListOf<String>()
         var archive: File? = null
         var failure: Throwable? = null
@@ -27,9 +28,14 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             val browserResult = root.importBrowserSource(browserScript.absolutePath, browserScript.name)
             check(browserResult.code == 0) { browserResult.output }
             val browserFields = browserResult.output.lineSequence().first { it.startsWith("IMPORTED|") }.split('|')
-            check(browserFields[1] == "scripts")
             imported.add(ManagedFile(browserFields[1], browserFields[2], "777"))
-            check(root.run("cat ${root.quote("${root.managedRoot}/scripts/${browserFields[2]}")}").output.trim() == "echo browser-import")
+            check(browserFields[1] == "library")
+            check(root.run("cat ${root.quote("${root.managedRoot}/${browserFields[2]}")}").output.trim() == "echo browser-import")
+            // A manually copied program must be listed without going through the importer.
+            check(root.copyPath(browserScript.absolutePath, root.managedRoot).code == 0)
+            val manualFile = ManagedFile("library", browserScript.name, "777").also { imported.add(it) }
+            check(root.list().second.any { it.kind == manualFile.kind && it.name == manualFile.name })
+            checks.add("Unified library: import and manually copied files are listed at root")
             val invalidImport = File(fixture, "not-executable.txt").apply { writeText("hello") }
             check(runCatching { root.importBrowserSource(invalidImport.absolutePath, invalidImport.name) }.isFailure)
             check(root.importBrowserSource(fixture.absolutePath, "directory.sh").code != 0)
@@ -63,18 +69,19 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 }.absolutePath else root.run("if [ -e /system/bin/linker64 ]; then readlink -f /system/bin/linker64; else readlink -f /system/bin/linker; fi").output.trim()
                 val result = root.importSource(source, "permission-$id" + if (kind == "scripts") ".sh" else "", kind)
                 check(result.code == 0) { result.output }
-                val name = result.output.lineSequence().first { it.startsWith("IMPORTED|") }.split('|')[2]
-                val file = ManagedFile(kind, name, "600")
+                val fields = result.output.lineSequence().first { it.startsWith("IMPORTED|") }.split('|')
+                val file = ManagedFile(fields[1], fields[2], "600")
                 imported.add(file)
+                check(file.kind == "library")
                 if (kind == "binaries") {
                     val autoResult = root.importBrowserSource(source, "browser-elf-$id.sh")
                     check(autoResult.code == 0) { autoResult.output }
                     val autoFields = autoResult.output.lineSequence().first { it.startsWith("IMPORTED|") }.split('|')
-                    check(autoFields[1] == "binaries")
                     imported.add(ManagedFile(autoFields[1], autoFields[2], "777"))
+                    check(autoFields[1] == "library")
                     checks.add("File-browser import: ELF header overrides misleading .sh extension")
                 }
-                val path = root.quote("${root.managedRoot}/$kind/$name")
+                val path = root.quote(root.filePath(file))
                 for (pty in listOf(false, true)) {
                     check(root.run("chmod 600 $path").code == 0)
                     val token = UUID.randomUUID().toString().also { tokens.add(it) }
@@ -86,10 +93,26 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                     if (kind == "scripts") check(output.contains("MODE:777")) { output.toString() }
                     checks.add("$kind ${if (pty) "PTY" else "Pipe"}: 600 -> 777 before execution")
                 }
+                val legacyDirectory = "${root.managedRoot}/$kind"
+                val legacySetup = root.run("if [ -d ${root.quote(legacyDirectory)} ]; then echo existing; else mkdir -- ${root.quote(legacyDirectory)} && echo created; fi")
+                check(legacySetup.code == 0) { legacySetup.output }
+                if (legacySetup.output.trim() == "created") createdLegacyDirectories.add(legacyDirectory)
+                val legacy = ManagedFile(kind, "legacy-$id" + if (kind == "scripts") ".sh" else "", "600")
+                val legacyPath = root.quote(root.filePath(legacy))
+                imported.add(legacy)
+                check(root.run("cp -- $path $legacyPath && chmod 600 $legacyPath").code == 0)
+                check(root.list().second.any { it.kind == kind && it.name == legacy.name })
+                for (pty in listOf(false, true)) {
+                    val token = UUID.randomUUID().toString().also { tokens.add(it) }
+                    val session: ExecutionSession = if (pty) PtySession(root, token) else PipeSession(root, token)
+                    check(session.run(legacy) {} == 0)
+                }
+                checks.add("Legacy $kind identities are still listed and executable in Pipe and PTY")
             }
         } catch (error: Throwable) { failure = error }
         finally {
             imported.forEach { runCatching { root.delete(it) } }
+            createdLegacyDirectories.forEach { path -> runCatching { root.run("rmdir -- ${root.quote(path)}") } }
             tokens.forEach { token -> runCatching {
                 root.run("rm -f -- ${root.quote("${root.managedRoot}/tmp/$token.pid")} ${root.quote("${root.managedRoot}/tmp/$token.cancel")}")
             } }

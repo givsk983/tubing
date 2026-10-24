@@ -26,7 +26,7 @@ class RootExecutor {
         set -eu
         [ "${'$'}(id -u)" = 0 ] || { echo '未获得 Root 权限'; exit 40; }
         [ ! -L $base ] || { echo '拒绝符号链接根目录'; exit 30; }
-        for d in scripts binaries logs tmp; do
+        for d in logs tmp; do
           p=$base/${'$'}d
           if [ -L "${'$'}p" ]; then echo "拒绝符号链接目录: ${'$'}p"; exit 31; fi
           [ -d "${'$'}p" ] || mkdir -p "${'$'}p"
@@ -254,11 +254,11 @@ class RootExecutor {
         if (kind == "scripts") require(safe.endsWith(".sh", true)) { "请选择 .sh 脚本" }
         val unique = "${safe.substringBeforeLast('.', safe)}-${UUID.randomUUID().toString().take(8)}" +
                 (if (safe.contains('.')) ".${safe.substringAfterLast('.')}" else "")
-        val dest = "$base/$kind/$unique"
+        val dest = "$base/$unique"
         val src = sourcePath
         return run("""
             set -eu
-            d=${quote("$base/$kind")}; f=${quote(dest)}; s=${quote(src)}
+            d=${quote(base)}; f=${quote(dest)}; s=${quote(src)}
             [ -d "${'$'}d" ] && [ ! -L "${'$'}d" ] || { echo '目标目录异常'; exit 32; }
             [ -f "${'$'}s" ] && [ ! -L "${'$'}s" ] || { echo '源文件不存在、不可访问或为符号链接'; exit 46; }
             ${if (kind == "binaries") "[ \"\$(head -c 4 \"\$s\" | od -An -tx1 | tr -d ' \\n')\" = 7f454c46 ] || { echo '文件不是 ELF 二进制'; exit 47; }" else ":"}
@@ -266,31 +266,40 @@ class RootExecutor {
             cp -- "${'$'}s" "${'$'}f"
             chmod 777 "${'$'}f"
             [ "${'$'}(stat -c %a "${'$'}f")" = 777 ] || { echo '权限验证失败'; exit 34; }
-            echo ${quote("IMPORTED|$kind|$unique")}
+            echo ${quote("IMPORTED|library|$unique")}
         """.trimIndent())
     }
 
     fun list(): Pair<CommandResult, List<ManagedFile>> {
         val result = run("""
             set -eu
-            for k in scripts binaries; do
-              d=$base/${'$'}k
+            for k in library scripts binaries; do
+              if [ "${'$'}k" = library ]; then d=$base; else d=$base/${'$'}k; fi
               [ -d "${'$'}d" ] && [ ! -L "${'$'}d" ] || continue
               find "${'$'}d" -mindepth 1 -maxdepth 1 -type f | while IFS= read -r f; do
+                n=${'$'}{f##*/}
+                case "${'$'}n" in *.[sS][hH]) ;; *)
+                  [ "${'$'}(head -c 4 "${'$'}f" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ] || continue ;;
+                esac
                 printf '%s|%s|%s\n' "${'$'}k" "${'$'}{f##*/}" "${'$'}(stat -c %a "${'$'}f")"
               done
             done
         """.trimIndent())
         val files = result.output.lineSequence().mapNotNull { line ->
-            val a = line.split('|'); if (a.size == 3 && a[0] in setOf("scripts", "binaries") && validName(a[1])) ManagedFile(a[0], a[1], a[2]) else null
-        }.toList()
+            val a = line.split('|'); if (a.size == 3 && a[0] in setOf("library", "scripts", "binaries") && validName(a[1])) ManagedFile(a[0], a[1], a[2]) else null
+        }.sortedWith(compareBy<ManagedFile> { it.name.lowercase() }.thenBy { it.kind }).toList()
         return result to files
     }
 
     fun delete(file: ManagedFile): CommandResult {
-        require(validName(file.name) && file.kind in setOf("scripts", "binaries"))
-        val path = "$base/${file.kind}/${file.name}"
+        val path = filePath(file)
         return run("[ ! -L ${quote(path)} ] && [ -f ${quote(path)} ] && rm -- ${quote(path)}")
+    }
+
+    /** Legacy identities stay stable for shortcuts, presets and remembered inputs. */
+    fun filePath(file: ManagedFile): String {
+        require(validName(file.name) && file.kind in setOf("library", "scripts", "binaries"))
+        return if (file.kind == "library") "$base/${file.name}" else "$base/${file.kind}/${file.name}"
     }
 
     fun logs(): CommandResult = run("find ${quote("$base/logs")} -maxdepth 1 -type f -name '*.log' -print -exec tail -n 200 {} \\;")
@@ -298,17 +307,23 @@ class RootExecutor {
     private fun validName(name: String) = name.matches(Regex("[\\p{L}\\p{N}._ -]{1,160}")) && name != "." && name != ".."
 
     fun sessionCommand(file: ManagedFile, slave: String?, token: String): String {
-        require(validName(file.name) && file.kind in setOf("scripts", "binaries"))
+        val path = filePath(file)
         require((slave == null || slave.matches(Regex("/dev/pts/[0-9]+"))) && token.matches(Regex("[a-f0-9-]+")))
-        val path = "$base/${file.kind}/${file.name}"
-        val launch = if (file.kind == "scripts") "sh ${quote(path)}" else quote(path)
+        val directory = path.substringBeforeLast('/')
+        val launch = """
+            if [ "${'$'}(head -c 4 ${quote(path)} | od -An -tx1 | tr -d ' \n')" = 7f454c46 ]; then
+                ${quote(path)}
+            else
+                sh ${quote(path)}
+            fi
+        """.trimIndent()
         val inner = """
             ${if (slave != null) "exec 0<${quote(slave)} 1>${quote(slave)} 2>&1" else ": 管道模式保留标准输入输出"}
             ${if (slave != null) "export TERM=xterm-256color COLORTERM=truecolor" else "export TERM=dumb; unset COLORTERM"}
             [ ! -e ${quote("$base/tmp/$token.cancel")} ] || exit 130
             echo ${'$'}${'$'} > ${quote("$base/tmp/$token.pid")}
             [ ! -e ${quote("$base/tmp/$token.cancel")} ] || exit 130
-            cd ${quote("$base/${file.kind}")} || exit 41
+            cd ${quote(directory)} || exit 41
             echo "[SELinux] ${'$'}(getenforce 2>/dev/null || echo 未知)"
             $launch
             rc=${'$'}?
@@ -318,11 +333,12 @@ class RootExecutor {
         return """
             set -eu
             [ "${'$'}(id -u)" = 0 ] || { echo 'Root 授权已失效'; exit 40; }
-            for d in $base $base/${file.kind} $base/logs $base/tmp; do
+            for d in $base ${quote(directory)} $base/logs $base/tmp; do
               [ -d "${'$'}d" ] && [ ! -L "${'$'}d" ] || { echo '执行目录异常'; exit 32; }
             done
             f=${quote(path)}
             [ -f "${'$'}f" ] && [ ! -L "${'$'}f" ] || { echo '文件不存在或为符号链接'; exit 35; }
+            ${if (file.name.endsWith(".sh", true)) ":" else "[ \"\$(head -c 4 \"\$f\" | od -An -tx1 | tr -d ' \\n')\" = 7f454c46 ] || { echo '文件不是 SH 脚本或 ELF 程序'; exit 47; }"}
             chmod 777 "${'$'}f"
             [ "${'$'}(stat -c %a "${'$'}f")" = 777 ] || { echo '权限验证失败'; exit 38; }
             opts=${'$'}(awk -v p="${'$'}f" '(${ '$' }2=="/" || index(p,${ '$' }2 "/")==1) && length(${ '$' }2)>m {m=length(${ '$' }2);o=${ '$' }4} END{print o}' /proc/mounts)

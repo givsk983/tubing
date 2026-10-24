@@ -5,7 +5,7 @@
 - Native Kotlin Android application, package `com.stealth.rootexecutor`.
 - `MainActivity` shares the dual-pane file manager with the import picker, including swipe/range selection and batch SH/ELF import. Android's Storage Access Framework (`ACTION_OPEN_DOCUMENT`) remains an alternate import source.
 - `RootExecutor` owns all privileged file operations. It invokes `su -c` once per operation; commands do not nest `su`.
-- Persistent managed data lives under `/data/adb/root_executor/{scripts,binaries,logs,tmp}`. App cache is only used as an import staging area.
+- SH and ELF programs share `/data/adb/root_executor` directly; imported records use the `library` identity and runtime header detection chooses the launcher. `logs/` and `tmp/` remain internal subdirectories. Legacy `scripts`/`binaries` records retain their paths and identities for existing shortcuts, presets and history. App cache is only used as an import staging area.
 - Imported names retain Unicode letters/numbers (including Chinese), spaces and a conservative punctuation allowlist, and are suffixed with a random identifier. Shell arguments are single-quote escaped.
 - Directories and target files are checked against symlinks before modification or execution. Only regular files are listed and removable.
 - Scripts are launched with `sh`; ELF imports are checked for ELF magic and launched directly. Every execution re-applies mode 777, verifies it using `stat`, reports SELinux state and checks for a `noexec` mount.

@@ -345,7 +345,7 @@ class MainActivity : Activity() {
         if (browserImportMode) title.addView(button("取消导入") { closeImportBrowser() })
         title.addView(button("刷新") { refreshBrowsers() })
         area.addView(title)
-        if (!prefs.getBoolean("fileLibraryHintDismissed", false)) {
+        if (!prefs.getBoolean("unifiedFileLibraryHintDismissed", false)) {
             val hint = LinearLayout(this).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(10), dp(4), dp(4), dp(4))
@@ -354,10 +354,10 @@ class MainActivity : Activity() {
                     cornerRadius = dp(10).toFloat()
                 }
             }
-            hint.addView(text("scripts 用于存放 Shell 脚本，binaries 用于存放 ELF 程序。手动复制的文件需自行放入对应目录。", 12f, mutedColor()),
+            hint.addView(text("SH 脚本和 ELF 程序统一存放在 /data/adb/root_executor，可直接导入或复制到此处。", 12f, mutedColor()),
                 LinearLayout.LayoutParams(0, -2, 1f))
             hint.addView(button("知道了") {
-                prefs.edit().putBoolean("fileLibraryHintDismissed", true).apply()
+                prefs.edit().putBoolean("unifiedFileLibraryHintDismissed", true).apply()
                 area.removeView(hint)
             }, LinearLayout.LayoutParams(dp(80), dp(48)))
             area.addView(hint, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
@@ -371,7 +371,7 @@ class MainActivity : Activity() {
         panes.addView(divider, LinearLayout.LayoutParams(dp(1), -1))
         panes.addView(browserPane(false), LinearLayout.LayoutParams(0, -1, 1f))
         area.addView(panes, LinearLayout.LayoutParams(-1, 0, 1f))
-        browserTargetLabel = text("操作目标：${if (activeBrowserLeft) "左侧 · 执行文件库" else "右侧 · 设备目录"}", 11f, accent).apply {
+        browserTargetLabel = text("操作目标：${if (activeBrowserLeft) "左侧 · 脚本库" else "右侧 · 设备目录"}", 11f, accent).apply {
             gravity = Gravity.CENTER_VERTICAL
         }
         browserNavigationBar = column().apply {
@@ -446,7 +446,7 @@ class MainActivity : Activity() {
             isClickable = true
             setOnClickListener { focusBrowser(left) }
         }
-        val caption = text(if (left) "执行文件库" else "设备目录", 13f, if (activeBrowserLeft == left) accent else foreground)
+        val caption = text(if (left) "脚本库" else "设备目录", 13f, if (activeBrowserLeft == left) accent else foreground)
         caption.setOnClickListener { focusBrowser(left) }
         if (left) leftBrowserCaption = caption else rightBrowserCaption = caption
         pane.addView(caption)
@@ -475,21 +475,12 @@ class MainActivity : Activity() {
             (if (left) leftBrowserRows else rightBrowserRows)[entry.path] = row
             val icon = when { entry.type == "d" -> "📁"; entry.type == "l" -> "↪";
                 entry.name.endsWith(".zip", true) -> "📦"; entry.type == "f" -> "📄"; else -> "▪" }
-            val category = if (entry.type == "d") when (entry.path.trimEnd('/')) {
-                "${root.managedRoot}/scripts" -> "Shell 脚本" to "scripts · 存放 .sh 脚本"
-                "${root.managedRoot}/binaries" -> "二进制程序" to "binaries · 存放 Android ELF 可执行文件"
-                else -> null
-            } else null
-            row.addView(text("$icon  ${category?.first ?: entry.name}", if (category != null) 13f else 12f, foreground).apply {
+            row.addView(text("$icon  ${entry.name}", 12f, foreground).apply {
                 if (browserImportMode && entry.type == "f") {
                     text = "☐ $text"
                     tag = "importSelectable"
                 }
-                if (category != null) typeface = Typeface.DEFAULT_BOLD
                 maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; setPadding(0, dp(3), 0, dp(1))
-            })
-            if (category != null) row.addView(text(category.second, 11f, mutedColor()).apply {
-                setPadding(0, dp(3), 0, dp(7))
             })
             installBrowserSwipe(row, left, entry)
             row.setOnClickListener {
@@ -539,7 +530,7 @@ class MainActivity : Activity() {
     private fun focusBrowser(left: Boolean) {
         lastBackPressedAt = 0L
         activeBrowserLeft = left
-        browserTargetLabel?.text = "操作目标：${if (left) "左侧 · 执行文件库" else "右侧 · 设备目录"}"
+        browserTargetLabel?.text = "操作目标：${if (left) "左侧 · 脚本库" else "右侧 · 设备目录"}"
         leftBrowserCaption?.setTextColor(if (left) accent else foreground)
         rightBrowserCaption?.setTextColor(if (left) foreground else accent)
         updateBrowserSelection()
@@ -549,8 +540,7 @@ class MainActivity : Activity() {
 
     private fun visibleBrowserEntries(left: Boolean): List<BrowserEntry> {
         val entries = if (left) leftEntries else rightEntries
-        return if (left && leftPath.trimEnd('/') == root.managedRoot)
-            entries.filter { it.name == "scripts" || it.name == "binaries" } else entries
+        return entries
     }
 
     private fun selectableBrowserEntries(left: Boolean) = visibleBrowserEntries(left).filter {
@@ -1140,11 +1130,8 @@ class MainActivity : Activity() {
     private fun showSystemImportOptions() {
         styledDialog("导入文件", "选择文件类型或从常用目录导入", { dialog ->
             column().apply {
-                addView(optionCard("SH 脚本", "通过系统文件选择器导入 .sh 文件") {
+                addView(optionCard("选择程序", "通过系统文件选择器导入 SH / ELF，统一保存到脚本库") {
                     dialog.dismiss(); openImportPicker(100)
-                })
-                addView(optionCard("ELF 二进制", "通过系统文件选择器导入 Android 可执行文件") {
-                    dialog.dismiss(); openImportPicker(101)
                 })
                 addView(optionCard("ZIP 压缩包", "预览压缩包内容，选择 SH 脚本和 ELF 二进制导入") {
                     dialog.dismiss(); openImportPicker(102)
@@ -1312,26 +1299,11 @@ class MainActivity : Activity() {
             openZipBrowser(true, BrowserEntry(path, name, "f", 0, 0), importMode = true)
             return
         }
-        val options = if (name.endsWith(".sh", true)) arrayOf("导入为 SH 脚本") else arrayOf("导入为 ELF 二进制", "导入为 SH 脚本")
-        styledDialog("选择导入类型", name, { dialog ->
-            column().apply {
-                options.forEachIndexed { index, label ->
-                    addView(optionCard(label, if (options.size == 1 || index == 1) "通过 sh 执行" else "校验 ELF 魔数后直接执行") {
-                        dialog.dismiss()
-                        val kind = if (options.size == 1 || index == 1) "scripts" else "binaries"
-                        work({
-                            val result = root.importSource(path, name, kind)
-                            check(result.code == 0) { result.output.ifBlank { "导入失败" } }
-                            result
-                        }) { result ->
-                            val fields = result.output.lineSequence().firstOrNull { it.startsWith("IMPORTED|") }?.split('|')
-                            if (fields?.size == 3) selected = ManagedFile(fields[1], fields[2], "777")
-                            tab = 0; showTab(); message("导入完成", selected?.name ?: "文件已导入")
-                        }
-                    })
-                }
-            }
-        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
+        work({ root.importBrowserSource(path, name).also { check(it.code == 0) { it.output.ifBlank { "导入失败" } } } }) { result ->
+            val fields = result.output.lineSequence().firstOrNull { it.startsWith("IMPORTED|") }?.split('|')
+            if (fields?.size == 3) selected = ManagedFile(fields[1], fields[2], "777")
+            tab = 0; showTab(); message("导入完成", selected?.name ?: "文件已导入")
+        }
     }
     @android.annotation.SuppressLint("SetJavaScriptEnabled")
     private fun createTerminal() = WebView(this).apply {
@@ -1355,7 +1327,7 @@ class MainActivity : Activity() {
         else styledDialog("选择执行文件", "共 ${files.size} 个文件 · 点击选择", { dialog ->
             column().apply {
                 files.forEach { file ->
-                    addView(optionCard(file.name, "${if (file.kind == "scripts") "SH 脚本" else "ELF 二进制"} · 权限 ${file.mode}",
+                    addView(optionCard(file.name, "${root.filePath(file)} · 权限 ${file.mode}",
                         selected?.kind == file.kind && selected?.name == file.name) {
                         selected = file; dialog.dismiss(); showTab(); afterSelection()
                     })
@@ -1725,7 +1697,7 @@ class MainActivity : Activity() {
             val presetButton = button("输入方案：${presetName ?: "不使用"}") { }
             fileButton.setOnClickListener {
                 AlertDialog.Builder(this).setTitle("选择脚本")
-                    .setItems(files.map { "${it.name}  ·  ${if (it.kind == "scripts") "SH" else "ELF"}" }.toTypedArray()) { _, index ->
+                    .setItems(files.map { it.name }.toTypedArray()) { _, index ->
                         file = files[index]
                         presetName = null
                         fileButton.text = "脚本：${file.name}"
@@ -2323,13 +2295,12 @@ class MainActivity : Activity() {
             openZipImport(uri, name)
             return
         }
-        val kind = if (requestCode == 100) "scripts" else "binaries"
         work({
             val temp = File.createTempFile("incoming-", ".tmp", cacheDir)
             try {
                 (contentResolver.openInputStream(uri) ?: error("无法读取文件")).use { input -> temp.outputStream().use { input.copyTo(it) } }
-                if (kind == "scripts") require(name.endsWith(".sh", true)) { "请选择 .sh 脚本" }
-                else temp.inputStream().use { input -> val magic = ByteArray(4); require(input.read(magic) == 4 && magic.contentEquals(byteArrayOf(127, 69, 76, 70))) { "文件不是 ELF 二进制" } }
+                val magic = temp.inputStream().use { input -> ByteArray(4).also { input.read(it) } }
+                val kind = ZipExtractor.importKind(name, magic)
                 root.import(temp, name, kind).also { check(it.code == 0) { it.output } }
             } finally { temp.delete() }
         }) { result ->

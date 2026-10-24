@@ -32,7 +32,7 @@ class ExecutionModeTest {
     }
 
     @Test fun bothBackendsRepairAndVerifyPermissionsForScriptsAndBinariesRegardlessOfListedMode() {
-        for (kind in listOf("scripts", "binaries")) {
+        for (kind in listOf("library", "scripts", "binaries")) {
             for (slave in listOf(null, "/dev/pts/12")) {
                 val command = RootExecutor().sessionCommand(ManagedFile(kind, "test", "600"), slave, "abc-123")
                 val chmod = command.indexOf("chmod 777")
@@ -43,5 +43,27 @@ class ExecutionModeTest {
                 assertTrue(command.contains("权限验证失败'; exit 38"))
             }
         }
+    }
+
+    @Test fun unifiedLibraryUsesRootAsPathAndWorkingDirectoryAndDetectsElfAtLaunch() {
+        val root = RootExecutor()
+        val file = ManagedFile("library", "中文 test.sh", "600")
+        assertEquals("/data/adb/root_executor/中文 test.sh", root.filePath(file))
+        val command = root.sessionCommand(file, null, "abc-123")
+        assertTrue(command.contains("cd"))
+        assertFalse(command.contains("/scripts/"))
+        assertFalse(command.contains("/binaries/"))
+        assertTrue(command.contains("7f454c46"))
+        assertTrue(command.contains("else"))
+    }
+
+    @Test fun legacyFilesRetainTheirExistingIdentityAndPath() {
+        val root = RootExecutor()
+        assertEquals("/data/adb/root_executor/scripts/old.sh", root.filePath(ManagedFile("scripts", "old.sh", "777")))
+        assertEquals("/data/adb/root_executor/binaries/old", root.filePath(ManagedFile("binaries", "old", "777")))
+    }
+
+    @Test(expected = IllegalArgumentException::class) fun unknownLibraryLocationIsRejected() {
+        RootExecutor().filePath(ManagedFile("tmp", "test.sh", "777"))
     }
 }

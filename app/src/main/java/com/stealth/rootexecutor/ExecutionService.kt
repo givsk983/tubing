@@ -26,7 +26,7 @@ object SessionState {
     @Volatile var status = "终端已就绪"
     @Volatile var title = "交互终端"
     @Volatile var executionId: String? = null
-    @Volatile var kind = "scripts"
+    @Volatile var kind = "library"
     @Volatile var rememberInput = false
     @Volatile var trackInputHistory = true
     @Volatile var mode = ExecutionMode.PIPE
