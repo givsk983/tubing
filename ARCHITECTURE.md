@@ -3,7 +3,7 @@
 ## Architecture
 
 - Native Kotlin Android application, package `com.stealth.rootexecutor`.
-- `MainActivity` is the management UI and uses Android's Storage Access Framework (`ACTION_OPEN_DOCUMENT`) for imports.
+- `MainActivity` shares the dual-pane file manager with the import picker, including swipe/range selection and batch SH/ELF import. Android's Storage Access Framework (`ACTION_OPEN_DOCUMENT`) remains an alternate import source.
 - `RootExecutor` owns all privileged file operations. It invokes `su -c` once per operation; commands do not nest `su`.
 - Persistent managed data lives under `/data/adb/root_executor/{scripts,binaries,logs,tmp}`. App cache is only used as an import staging area.
 - Imported names retain Unicode letters/numbers (including Chinese), spaces and a conservative punctuation allowlist, and are suffixed with a random identifier. Shell arguments are single-quote escaped.

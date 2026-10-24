@@ -232,6 +232,20 @@ class RootExecutor {
     private fun validPath(path: String) = path.startsWith('/') && !path.contains('\u0000') && path.split('/').none { it == ".." }
     private fun validLeafName(name: String) = name.isNotBlank() && name !in setOf(".", "..") && !name.contains('/') && !name.contains('\u0000')
 
+    /** Read only the header through root; normal import rechecks the source and ELF signature. */
+    fun importBrowserSource(sourcePath: String, originalName: String): CommandResult {
+        require(validPath(sourcePath)) { "源文件路径无效" }
+        val header = run("""
+            set -eu
+            s=${quote(sourcePath)}
+            [ -f "${'$'}s" ] && [ ! -L "${'$'}s" ] || { echo '请选择普通文件，不能导入目录或符号链接'; exit 46; }
+            head -c 4 "${'$'}s" | base64
+        """.trimIndent())
+        if (header.code != 0) return header
+        val kind = ZipExtractor.importKind(originalName, Base64.decode(header.output.trim(), Base64.DEFAULT))
+        return importSource(sourcePath, originalName, kind)
+    }
+
     fun importSource(sourcePath: String, originalName: String, kind: String): CommandResult {
         require(kind == "scripts" || kind == "binaries")
         require(sourcePath.startsWith('/') && !sourcePath.contains('\u0000')) { "源文件路径无效" }

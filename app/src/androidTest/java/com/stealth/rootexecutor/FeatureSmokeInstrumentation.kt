@@ -23,6 +23,17 @@ class FeatureSmokeInstrumentation : Instrumentation() {
         var failure: Throwable? = null
         try {
             check(root.initialize().code == 0) { "Root authorization failed" }
+            val browserScript = File(fixture, "browser-$id.SH").apply { writeText("echo browser-import") }
+            val browserResult = root.importBrowserSource(browserScript.absolutePath, browserScript.name)
+            check(browserResult.code == 0) { browserResult.output }
+            val browserFields = browserResult.output.lineSequence().first { it.startsWith("IMPORTED|") }.split('|')
+            check(browserFields[1] == "scripts")
+            imported.add(ManagedFile(browserFields[1], browserFields[2], "777"))
+            check(root.run("cat ${root.quote("${root.managedRoot}/scripts/${browserFields[2]}")}").output.trim() == "echo browser-import")
+            val invalidImport = File(fixture, "not-executable.txt").apply { writeText("hello") }
+            check(runCatching { root.importBrowserSource(invalidImport.absolutePath, invalidImport.name) }.isFailure)
+            check(root.importBrowserSource(fixture.absolutePath, "directory.sh").code != 0)
+            checks.add("File-browser import: classify SH, preserve contents, reject non-executable files and directories")
             val zip = File(fixture, "中文.zip")
             ZipOutputStream(zip.outputStream()).use { output ->
                 listOf("中文/run.sh" to "echo hello", "folder/nested.txt" to "nested", "skip.txt" to "skip").forEach { (name, value) ->
@@ -55,6 +66,14 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 val name = result.output.lineSequence().first { it.startsWith("IMPORTED|") }.split('|')[2]
                 val file = ManagedFile(kind, name, "600")
                 imported.add(file)
+                if (kind == "binaries") {
+                    val autoResult = root.importBrowserSource(source, "browser-elf-$id.sh")
+                    check(autoResult.code == 0) { autoResult.output }
+                    val autoFields = autoResult.output.lineSequence().first { it.startsWith("IMPORTED|") }.split('|')
+                    check(autoFields[1] == "binaries")
+                    imported.add(ManagedFile(autoFields[1], autoFields[2], "777"))
+                    checks.add("File-browser import: ELF header overrides misleading .sh extension")
+                }
                 val path = root.quote("${root.managedRoot}/$kind/$name")
                 for (pty in listOf(false, true)) {
                     check(root.run("chmod 600 $path").code == 0)

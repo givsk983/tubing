@@ -73,10 +73,14 @@ class MainActivity : Activity() {
     private var lastBackPressedAt = 0L
     private var leftEntries: List<BrowserEntry> = emptyList()
     private var rightEntries: List<BrowserEntry> = emptyList()
-    private var selectedLeft: BrowserEntry? = null
-    private var selectedRight: BrowserEntry? = null
-    private var selectedLeftRow: View? = null
-    private var selectedRightRow: View? = null
+    private val leftSelection = BrowserSelection()
+    private val rightSelection = BrowserSelection()
+    private val leftBrowserRows = mutableMapOf<String, View>()
+    private val rightBrowserRows = mutableMapOf<String, View>()
+    private var browserSelectionBar: LinearLayout? = null
+    private var browserNavigationBar: LinearLayout? = null
+    private var browserImportMode = false
+    private var browserSelectionCount: TextView? = null
     private var activeBrowserLeft = true
     private var browserTargetLabel: TextView? = null
     private var leftBrowserCaption: TextView? = null
@@ -213,7 +217,11 @@ class MainActivity : Activity() {
     private fun showTab() {
         if (!granted) return
         val quick = prefs.getBoolean("quickInterface", false)
-        if (quick) tab = 0
+        if (quick && !browserImportMode) tab = 0
+        if (tab != 1 && browserImportMode) {
+            browserImportMode = false
+            leftSelection.clear(); rightSelection.clear()
+        }
         content.removeAllViews()
         val nav = page.getChildAt(page.childCount - 1) as LinearLayout
         nav.visibility = if (quick) View.INVISIBLE else View.VISIBLE
@@ -329,11 +337,12 @@ class MainActivity : Activity() {
 
     private fun fileManagerPage() {
         content.removeAllViews()
-        selectedLeftRow = null
-        selectedRightRow = null
+        leftBrowserRows.clear()
+        rightBrowserRows.clear()
         val area = column()
         val title = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        title.addView(text("文件管理", 21f), LinearLayout.LayoutParams(0, dp(48), 1f))
+        title.addView(text(if (browserImportMode) "导入文件" else "文件管理", 21f), LinearLayout.LayoutParams(0, dp(48), 1f))
+        if (browserImportMode) title.addView(button("取消导入") { closeImportBrowser() })
         title.addView(button("刷新") { refreshBrowsers() })
         area.addView(title)
         if (!prefs.getBoolean("fileLibraryHintDismissed", false)) {
@@ -365,7 +374,9 @@ class MainActivity : Activity() {
         browserTargetLabel = text("操作目标：${if (activeBrowserLeft) "左侧 · 执行文件库" else "右侧 · 设备目录"}", 11f, accent).apply {
             gravity = Gravity.CENTER_VERTICAL
         }
-        area.addView(browserTargetLabel, LinearLayout.LayoutParams(-1, dp(34)))
+        browserNavigationBar = column().apply {
+            addView(browserTargetLabel, LinearLayout.LayoutParams(-1, dp(34)))
+        }
         val navigation = object : LinearLayout(this) {
             private var gestureStartY = 0f
             private var gestureStartX = 0f
@@ -400,16 +411,40 @@ class MainActivity : Activity() {
         }
         navigation.addView(button("↑ 上级") { goParent(activeBrowserLeft) }, LinearLayout.LayoutParams(0, dp(46), 1f))
         navigation.addView(button("⌂ 主页") { navigateBrowser(activeBrowserLeft, if (activeBrowserLeft) root.managedRoot else "/storage/emulated/0") }, LinearLayout.LayoutParams(0, dp(46), 1f))
-        navigation.addView(button("＋ 新建") { createBrowserDirectory(activeBrowserLeft) }, LinearLayout.LayoutParams(0, dp(46), 1f))
-        area.addView(navigation)
+        navigation.addView(button(if (browserImportMode) "更多导入" else "＋ 新建") {
+            if (browserImportMode) showSystemImportOptions() else createBrowserDirectory(activeBrowserLeft)
+        }, LinearLayout.LayoutParams(0, dp(46), 1f))
+        browserNavigationBar?.addView(navigation)
+        browserSelectionBar = column().apply {
+            val actions = LinearLayout(this@MainActivity).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                browserSelectionCount = text("", 12f, accent)
+                addView(browserSelectionCount, LinearLayout.LayoutParams(0, -1, 1f))
+                addView(button(if (browserImportMode) "导入所选" else "所选操作") {
+                    if (browserImportMode) importBrowserSelection(activeBrowserLeft) else showBrowserSelectionActions(activeBrowserLeft)
+                }, LinearLayout.LayoutParams(0, -1, 1f))
+                addView(button("取消选择") { clearBrowserSelection(activeBrowserLeft) }, LinearLayout.LayoutParams(0, -1, 1f))
+            }
+            addView(actions, LinearLayout.LayoutParams(-1, dp(46)))
+            addView(text(if (browserImportMode) "点按勾选 · 连续右滑范围选中 · ZIP 可打开选择" else "左右滑选中 · 连续右滑范围选中 · 选择时点按追加", 11f, mutedColor()).apply {
+                gravity = Gravity.CENTER_VERTICAL
+            }, LinearLayout.LayoutParams(-1, dp(34)))
+        }
+        // Both bars participate in measurement; switching modes cannot resize the file panes.
+        val bottomBar = FrameLayout(this).apply {
+            addView(browserNavigationBar, FrameLayout.LayoutParams(-1, -2))
+            addView(browserSelectionBar, FrameLayout.LayoutParams(-1, -2))
+        }
+        area.addView(bottomBar, LinearLayout.LayoutParams(-1, -2))
         content.addView(area, FrameLayout.LayoutParams(-1, -1))
+        updateBrowserSelection()
     }
 
     private fun browserPane(left: Boolean): LinearLayout {
         val pane = column().apply {
             setPadding(dp(3), 0, dp(3), 0)
             isClickable = true
-            setOnClickListener { focusBrowser(left); clearBrowserSelection() }
+            setOnClickListener { focusBrowser(left) }
         }
         val caption = text(if (left) "执行文件库" else "设备目录", 13f, if (activeBrowserLeft == left) accent else foreground)
         caption.setOnClickListener { focusBrowser(left) }
@@ -425,22 +460,19 @@ class MainActivity : Activity() {
             isClickable = true
             setOnClickListener {
                 focusBrowser(left)
-                clearBrowserSelection()
             }
         }
-        val entries = if (left) leftEntries else rightEntries
-        val filtered = if (left && (leftPath == root.managedRoot || leftPath == root.managedRoot + "/"))
-            entries.filter { it.name == "scripts" || it.name == "binaries" } else entries
+        val filtered = visibleBrowserEntries(left)
+        val selection = browserSelection(left)
+        selection.retain(selectableBrowserEntries(left).map { it.path })
         if (filtered.isEmpty()) list.addView(text("目录为空", 12f, foreground))
         filtered.forEach { entry ->
-            val isSelected = if (left) selectedLeft?.path == entry.path else selectedRight?.path == entry.path
+            val isSelected = entry.path in selection.selectedPaths
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL; setPadding(dp(7), dp(3), dp(5), dp(3))
                 setBackgroundColor(if (isSelected) (if (dark) Color.rgb(25, 64, 80) else Color.rgb(210, 239, 243)) else Color.TRANSPARENT)
             }
-            if (isSelected) {
-                if (left) selectedLeftRow = row else selectedRightRow = row
-            }
+            (if (left) leftBrowserRows else rightBrowserRows)[entry.path] = row
             val icon = when { entry.type == "d" -> "📁"; entry.type == "l" -> "↪";
                 entry.name.endsWith(".zip", true) -> "📦"; entry.type == "f" -> "📄"; else -> "▪" }
             val category = if (entry.type == "d") when (entry.path.trimEnd('/')) {
@@ -449,32 +481,49 @@ class MainActivity : Activity() {
                 else -> null
             } else null
             row.addView(text("$icon  ${category?.first ?: entry.name}", if (category != null) 13f else 12f, foreground).apply {
+                if (browserImportMode && entry.type == "f") {
+                    text = "☐ $text"
+                    tag = "importSelectable"
+                }
                 if (category != null) typeface = Typeface.DEFAULT_BOLD
                 maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; setPadding(0, dp(3), 0, dp(1))
             })
             if (category != null) row.addView(text(category.second, 11f, mutedColor()).apply {
                 setPadding(0, dp(3), 0, dp(7))
             })
-            row.setOnTouchListener { _, event ->
-                if (event.actionMasked == MotionEvent.ACTION_DOWN) focusBrowser(left)
-                false
-            }
+            installBrowserSwipe(row, left, entry)
             row.setOnClickListener {
                 activeBrowserLeft = left
-                if (entry.type == "d") navigateBrowser(left, entry.path, rememberCurrent = true)
+                if (browserImportMode && entry.type == "d") {
+                    navigateBrowser(left, entry.path, rememberCurrent = true)
+                } else if (browserImportMode && entry.type == "l") {
+                    Toast.makeText(this, "请选择普通文件，不能导入符号链接", Toast.LENGTH_SHORT).show()
+                } else if (browserImportMode && entry.name.endsWith(".zip", true) && !selection.inSelectionMode) {
+                    openZipBrowser(left, entry, importMode = true)
+                } else if (browserImportMode || selection.inSelectionMode) {
+                    selection.add(entry.path)
+                    updateBrowserSelection()
+                } else if (entry.type == "d") navigateBrowser(left, entry.path, rememberCurrent = true)
                 else if (entry.type == "f" && entry.name.endsWith(".zip", true)) openZipBrowser(left, entry)
                 else {
-                    if (left) {
-                        selectedLeftRow?.setBackgroundColor(Color.TRANSPARENT)
-                        selectedLeft = entry; selectedLeftRow = row
-                    } else {
-                        selectedRightRow?.setBackgroundColor(Color.TRANSPARENT)
-                        selectedRight = entry; selectedRightRow = row
-                    }
-                    row.setBackgroundColor(if (dark) Color.rgb(25, 64, 80) else Color.rgb(210, 239, 243))
+                    selection.selectOnly(entry.path)
+                    updateBrowserSelection()
                 }
             }
-            row.setOnLongClickListener { focusBrowser(left); showEntryActions(left, entry); true }
+            row.setOnLongClickListener {
+                focusBrowser(left)
+                if (browserImportMode) {
+                    if (entry.type == "f") {
+                        selection.add(entry.path)
+                        updateBrowserSelection()
+                    } else Toast.makeText(this, "请进入目录选择普通文件", Toast.LENGTH_SHORT).show()
+                } else if (selection.inSelectionMode) {
+                    selection.add(entry.path)
+                    updateBrowserSelection()
+                    showBrowserSelectionActions(left)
+                } else showEntryActions(left, entry)
+                true
+            }
             list.addView(row)
             list.addView(View(this).apply { setBackgroundColor(if (dark) Color.rgb(34, 47, 62) else Color.rgb(226, 233, 238)) }, LinearLayout.LayoutParams(-1, dp(1)))
         }
@@ -493,13 +542,98 @@ class MainActivity : Activity() {
         browserTargetLabel?.text = "操作目标：${if (left) "左侧 · 执行文件库" else "右侧 · 设备目录"}"
         leftBrowserCaption?.setTextColor(if (left) accent else foreground)
         rightBrowserCaption?.setTextColor(if (left) foreground else accent)
+        updateBrowserSelection()
     }
 
-    private fun clearBrowserSelection() {
-        selectedLeftRow?.setBackgroundColor(Color.TRANSPARENT)
-        selectedRightRow?.setBackgroundColor(Color.TRANSPARENT)
-        selectedLeftRow = null; selectedRightRow = null
-        selectedLeft = null; selectedRight = null
+    private fun browserSelection(left: Boolean) = if (left) leftSelection else rightSelection
+
+    private fun visibleBrowserEntries(left: Boolean): List<BrowserEntry> {
+        val entries = if (left) leftEntries else rightEntries
+        return if (left && leftPath.trimEnd('/') == root.managedRoot)
+            entries.filter { it.name == "scripts" || it.name == "binaries" } else entries
+    }
+
+    private fun selectableBrowserEntries(left: Boolean) = visibleBrowserEntries(left).filter {
+        !browserImportMode || it.type == "f"
+    }
+
+    private fun clearBrowserSelection(left: Boolean) {
+        browserSelection(left).clear()
+        updateBrowserSelection()
+    }
+
+    private fun updateBrowserSelection() {
+        listOf(true, false).forEach { left ->
+            val selection = browserSelection(left)
+            val selectedPaths = selection.selectedPaths
+            (if (left) leftBrowserRows else rightBrowserRows).forEach { (path, row) ->
+                val checked = path in selectedPaths
+                row.isSelected = checked
+                row.findViewWithTag<TextView>("importSelectable")?.let { label ->
+                    label.text = (if (checked) "☑ " else "☐ ") + label.text.toString().removePrefix("☐ ").removePrefix("☑ ")
+                }
+                row.setBackgroundColor(if (checked) (if (dark) Color.rgb(25, 64, 80) else Color.rgb(210, 239, 243)) else Color.TRANSPARENT)
+            }
+        }
+        val selection = browserSelection(activeBrowserLeft)
+        browserSelectionBar?.visibility = if (selection.inSelectionMode) View.VISIBLE else View.INVISIBLE
+        browserNavigationBar?.visibility = if (selection.inSelectionMode) View.INVISIBLE else View.VISIBLE
+        browserSelectionCount?.text = "${if (activeBrowserLeft) "左侧" else "右侧"}已选 ${selection.selectedPaths.size} 项"
+    }
+
+    private fun installBrowserSwipe(row: View, left: Boolean, entry: BrowserEntry) {
+        val slop = ViewConfiguration.get(this).scaledTouchSlop
+        val threshold = maxOf(dp(36), slop * 2)
+        var startX = 0f
+        var startY = 0f
+        var horizontal = false
+        var vertical = false
+        var cancelled = false
+        row.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    focusBrowser(left)
+                    startX = event.x; startY = event.y
+                    horizontal = false; vertical = false; cancelled = false
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    cancelled = true
+                    view.cancelLongPress()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = kotlin.math.abs(event.x - startX)
+                    val dy = kotlin.math.abs(event.y - startY)
+                    if (!horizontal && !vertical && maxOf(dx, dy) > slop) {
+                        horizontal = dx > dy * 1.5f
+                        vertical = !horizontal
+                        view.cancelLongPress()
+                    }
+                    if (horizontal) {
+                        view.parent.requestDisallowInterceptTouchEvent(true)
+                        view.isPressed = false
+                        return@setOnTouchListener true
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    view.parent.requestDisallowInterceptTouchEvent(false)
+                    if (horizontal || vertical || cancelled) {
+                        view.isPressed = false
+                        view.cancelLongPress()
+                        val delta = event.x - startX
+                        if (horizontal && !cancelled && kotlin.math.abs(delta) >= threshold) {
+                            browserSelection(left).swipe(entry.path, delta > 0, selectableBrowserEntries(left).map { it.path })
+                            updateBrowserSelection()
+                        }
+                        return@setOnTouchListener true
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    view.parent.requestDisallowInterceptTouchEvent(false)
+                    horizontal = false; vertical = false; cancelled = true
+                }
+            }
+            false
+        }
     }
 
     private fun refreshBrowsers() {
@@ -509,7 +643,7 @@ class MainActivity : Activity() {
             val leftResult = try { root.browse(left) } catch (e: Exception) { CommandResult(-1, e.message ?: "读取失败") to emptyList() }
             val rightResult = try { root.browse(right) } catch (e: Exception) { CommandResult(-1, e.message ?: "读取失败") to emptyList() }
             runOnUiThread {
-                if (isDestroyed || tab != 1) return@runOnUiThread
+                if (isDestroyed || tab != 1 || left != leftPath || right != rightPath) return@runOnUiThread
                 leftEntries = leftResult.second; rightEntries = rightResult.second
                 if (leftResult.first.code != 0) message("左侧目录无法读取", leftResult.first.output.ifBlank { "请检查目录路径和访问权限" })
                 if (rightResult.first.code != 0) message("右侧目录无法读取", rightResult.first.output.ifBlank { "请检查目录路径和访问权限" })
@@ -522,7 +656,8 @@ class MainActivity : Activity() {
         lastBackPressedAt = 0L
         val history = if (left) leftBrowserHistory else rightBrowserHistory
         if (rememberCurrent) history.add(if (left) leftPath else rightPath) else history.clear()
-        if (left) { leftPath = path; selectedLeft = null } else { rightPath = path; selectedRight = null }
+        clearBrowserSelection(left)
+        if (left) leftPath = path else rightPath = path
         refreshBrowsers()
     }
 
@@ -531,8 +666,8 @@ class MainActivity : Activity() {
         if (history.isEmpty()) return false
         lastBackPressedAt = 0L
         val previous = history.removeAt(history.lastIndex)
-        if (activeBrowserLeft) { leftPath = previous; selectedLeft = null }
-        else { rightPath = previous; selectedRight = null }
+        clearBrowserSelection(activeBrowserLeft)
+        if (activeBrowserLeft) leftPath = previous else rightPath = previous
         refreshBrowsers()
         return true
     }
@@ -556,6 +691,54 @@ class MainActivity : Activity() {
                 val path = if (left) leftPath else rightPath
                 work({ root.makeDirectory(path, input.text.toString().trim()).also { check(it.code == 0) { it.output.ifBlank { "创建失败" } } } }) { refreshBrowsers() }
             }.show()
+    }
+
+    private fun showBrowserSelectionActions(left: Boolean) {
+        val selectedPaths = browserSelection(left).selectedPaths
+        val entries = visibleBrowserEntries(left).filter { it.path in selectedPaths }
+        if (entries.isEmpty()) {
+            Toast.makeText(this, "请先滑动选择文件", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (entries.size == 1) {
+            showEntryActions(left, entries.single())
+            return
+        }
+        val destination = if (left) rightPath else leftPath
+        AlertDialog.Builder(this).setTitle("已选 ${entries.size} 项")
+            .setItems(arrayOf("复制到另一侧", "删除所选")) { _, index ->
+                if (index == 0) runBrowserBatch(left, entries, destination)
+                else AlertDialog.Builder(this).setTitle("删除所选 ${entries.size} 项？")
+                    .setMessage(entries.joinToString("\n") { it.name } + "\n\n所选文件夹及其全部内容也会删除。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("删除") { _, _ -> runBrowserBatch(left, entries, null) }.show()
+            }.setNegativeButton("取消", null).show()
+    }
+
+    private fun runBrowserBatch(left: Boolean, entries: List<BrowserEntry>, destination: String?) {
+        val action = if (destination == null) "删除" else "复制"
+        val progress = styledDialog("正在$action", "共 ${entries.size} 项", { text("请稍候…") }, { emptyList() })
+        progress.setCancelable(false)
+        progress.setCanceledOnTouchOutside(false)
+        io.execute {
+            val failures = entries.mapNotNull { entry ->
+                runCatching {
+                    val result = if (destination == null) root.deletePath(entry.path, entry.type == "d")
+                        else root.copyPath(entry.path, destination)
+                    check(result.code == 0) { result.output.ifBlank { "${action}失败" } }
+                }.exceptionOrNull()?.let { entry.path to "${entry.name}：${it.message}" }
+            }
+            runOnUiThread {
+                if (!isDestroyed) {
+                    progress.dismiss()
+                    if (failures.isEmpty()) clearBrowserSelection(left)
+                    else browserSelection(left).retain(failures.map { it.first })
+                    refreshBrowsers()
+                    message("${action}结果", "成功 ${entries.size - failures.size} 项，失败 ${failures.size} 项" +
+                        if (failures.isEmpty()) "" else "\n" + failures.joinToString("\n") { it.second })
+                }
+            }
+        }
     }
 
     private fun showEntryActions(left: Boolean, entry: BrowserEntry) {
@@ -582,7 +765,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("重命名").setView(input).setNegativeButton("取消", null)
             .setPositiveButton("保存") { _, _ ->
                 work({ root.renamePath(entry.path, input.text.toString().trim()).also { check(it.code == 0) { it.output.ifBlank { "重命名失败" } } } }) {
-                    if (left) selectedLeft = null else selectedRight = null
+                    clearBrowserSelection(left)
                     refreshBrowsers()
                 }
             }.show()
@@ -771,7 +954,7 @@ class MainActivity : Activity() {
     private fun executionPage() {
         val area = column()
         val actions = LinearLayout(this)
-        actions.addView(button("导入文件") { showImportOptions() }, LinearLayout.LayoutParams(0, -2, 1f))
+        actions.addView(button("导入文件") { openImportBrowser() }, LinearLayout.LayoutParams(0, -2, 1f))
         actions.addView(button("选择文件") { chooseFile() }, LinearLayout.LayoutParams(0, -2, 1f)); area.addView(actions)
         val controls = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         controls.addView(text(if (SessionState.running) SessionState.title else selected?.name ?: "选择文件后开始执行", 12f), LinearLayout.LayoutParams(0, -2, 1f))
@@ -893,7 +1076,68 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showImportOptions() {
+    private fun openImportBrowser() {
+        leftSelection.clear(); rightSelection.clear()
+        browserImportMode = true
+        activeBrowserLeft = false
+        rightPath = "/storage/emulated/0/Download"
+        rightEntries = emptyList()
+        rightBrowserHistory.clear()
+        tab = 1
+        showTab()
+    }
+
+    private fun closeImportBrowser() {
+        browserImportMode = false
+        leftSelection.clear(); rightSelection.clear()
+        tab = 0
+        showTab()
+    }
+
+    private fun importBrowserSelection(left: Boolean) {
+        val paths = browserSelection(left).selectedPaths
+        val entries = selectableBrowserEntries(left).filter { it.path in paths }
+        if (entries.isEmpty()) {
+            Toast.makeText(this, "请先选择要导入的文件", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val archives = entries.filter { it.name.endsWith(".zip", true) }
+        if (archives.isNotEmpty()) {
+            if (entries.size == 1) openZipBrowser(left, archives.single(), importMode = true)
+            else message("请单独选择 ZIP", "ZIP 需打开后选择内部文件导入，请将压缩包与普通文件分开选择。")
+            return
+        }
+        val progress = styledDialog("正在导入", "已选 ${entries.size} 个文件", { text("校验并导入 SH / ELF 文件，请稍候…") }, { emptyList() })
+        progress.setCancelable(false); progress.setCanceledOnTouchOutside(false)
+        io.execute {
+            val imported = mutableListOf<ManagedFile>()
+            val failures = mutableListOf<Pair<String, String>>()
+            entries.forEach { entry ->
+                runCatching {
+                    val response = root.importBrowserSource(entry.path, entry.name)
+                    check(response.code == 0) { response.output.ifBlank { "导入失败" } }
+                    val fields = response.output.lineSequence().firstOrNull { it.startsWith("IMPORTED|") }?.split('|')
+                    check(fields?.size == 3) { "未收到导入确认" }
+                    ManagedFile(fields!![1], fields[2], "777")
+                }.fold({ imported.add(it) }, { failures.add(entry.path to "${entry.name}：${it.message}") })
+            }
+            runOnUiThread {
+                if (!isDestroyed) {
+                    progress.dismiss()
+                    if (imported.isNotEmpty()) selected = imported.last()
+                    if (failures.isEmpty()) closeImportBrowser()
+                    else {
+                        browserSelection(left).retain(failures.map { it.first })
+                        updateBrowserSelection()
+                    }
+                    message(if (failures.isEmpty()) "导入完成" else "导入结果",
+                        "已导入 ${imported.size} 个文件" + if (failures.isEmpty()) "" else "\n失败 ${failures.size} 个：\n${failures.joinToString("\n") { it.second }}")
+                }
+            }
+        }
+    }
+
+    private fun showSystemImportOptions() {
         styledDialog("导入文件", "选择文件类型或从常用目录导入", { dialog ->
             column().apply {
                 addView(optionCard("SH 脚本", "通过系统文件选择器导入 .sh 文件") {
@@ -985,7 +1229,10 @@ class MainActivity : Activity() {
             column().apply {
                 if (sources.isEmpty()) addView(text("暂无路径，请先添加同步路径。", 14f, mutedColor()))
                 sources.forEach { source ->
-                    addView(optionCard(source.label, source.path) { dialog.dismiss(); syncSource(source.path) })
+                    addView(optionCard(source.label, source.path) {
+                        dialog.dismiss()
+                        if (browserImportMode) navigateBrowser(activeBrowserLeft, source.path) else syncSource(source.path)
+                    })
                 }
             }
         }, { dialog -> listOf(
@@ -2123,7 +2370,13 @@ class MainActivity : Activity() {
     override fun onConfigurationChanged(newConfig: Configuration) { super.onConfigurationChanged(newConfig); if (prefs.getString("theme", "system") == "system") recreate() }
     override fun onBackPressed() {
         if (!granted) { super.onBackPressed(); return }
+        if (tab == 1 && (leftSelection.inSelectionMode || rightSelection.inSelectionMode)) {
+            clearBrowserSelection(if (browserSelection(activeBrowserLeft).inSelectionMode) activeBrowserLeft else !activeBrowserLeft)
+            lastBackPressedAt = 0L
+            return
+        }
         if (tab == 1 && backBrowserDirectory()) return
+        if (tab == 1 && browserImportMode) { closeImportBrowser(); return }
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastBackPressedAt <= 2000L) finishAndRemoveTask()
         else {

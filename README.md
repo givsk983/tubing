@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.6"><img alt="Release v1.3.6" src="https://img.shields.io/badge/release-v1.3.6-28B9CF?style=flat-square"></a>
+  <a href="https://github.com/givsk983/tubing/releases/tag/v1.3.7"><img alt="Release v1.3.7" src="https://img.shields.io/badge/release-v1.3.7-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yunhe4550-design/Tubing/releases/download/v1.3.6/tubing-v1.3.6.apk">下载 APK</a>
+  <a href="https://github.com/givsk983/tubing/releases/download/v1.3.7/tubing-v1.3.7.apk">下载 APK</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.6` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.7` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -40,7 +40,11 @@
 
 点击 ZIP 可浏览内部目录、预览文件内容；长按选择文件或文件夹，再点击“解压所选”，直接解压到另一侧目录或压缩包所在目录。已有同名目标不会被覆盖。
 
-在执行页点击“导入文件 → ZIP 压缩包”，可浏览压缩包目录、预览文本或二进制内容，长按多选文件后点击“导入所选”。`.sh` 文件自动导入脚本目录，ELF 文件按文件头识别并导入二进制目录；同步路径中的 ZIP 也支持此操作。其他类型文件不能导入，不会自动执行所选内容。
+文件管理双栏支持左右滑动文件或文件夹进入选择模式。左滑追加当前项；第一次右滑选中当前项，后续右滑按当前列表顺序追加选中“上次右滑项到本次右滑项”的完整范围（包含两端，支持向上选）。选择模式中点按只追加选择，重复点按保持选中，不打开文件夹或 ZIP，也不改变右滑范围起点。左右栏分别记录选择，可通过“所选操作”复制或删除，多选时删除会二次确认；单选仍可重命名或解压 ZIP。点击“取消选择”或按返回键退出；进入其他目录清空该栏选择，刷新保留仍存在的已选项。
+
+在执行页点击“导入文件”，直接打开应用内文件管理，默认浏览下载目录。普通文件显示勾选标记，点按或左右滑动选择，连续右滑可范围选中，再点击底部“导入所选”批量导入。左右栏独立选择，每次导入当前栏的已选文件；进入其他目录会清空该栏选择。`.sh` 文件自动导入脚本目录，ELF 按文件头识别并导入二进制目录；失败项保留选择并显示原因，成功项不会重复导入，全部成功后返回执行页，不自动运行。
+
+导入时点击 ZIP 可浏览压缩包目录、预览文本或二进制内容，长按多选内部文件后点击“导入所选”；已勾选 ZIP 时点击“导入所选”也会打开它，ZIP 与普通文件需分开选择。“更多导入”保留系统文件选择器和同步路径入口；底部导航栏上滑可使用收藏路径。目录与符号链接不能作为待导入文件，其他类型文件导入时显示错误。
 
 ## 执行路径
 
@@ -68,10 +72,10 @@
 
 ### 2. 安装测试版
 
-从 [GitHub Release](https://github.com/yunhe4550-design/Tubing/releases/tag/v1.3.6) 下载 `tubing-v1.3.6.apk`，可通过 ADB 覆盖安装并保留数据。
+从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.3.7) 下载 `tubing-v1.3.7.apk`，可通过 ADB 覆盖安装并保留数据。
 
 ```bash
-adb install -r tubing-v1.3.6.apk
+adb install -r tubing-v1.3.7.apk
 ```
 
 发布 APK 的 SHA-256：
@@ -145,7 +149,7 @@ app/src/main/java/com/stealth/rootexecutor/
 
 ## 当前状态
 
-`v1.3.6` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选和分类导入 SH/ELF 文件。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
+`v1.3.7` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选和分类导入 SH/ELF 文件。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
 
 ## 第三方组件与许可
 

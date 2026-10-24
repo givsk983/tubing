@@ -13,6 +13,22 @@ import java.util.zip.ZipOutputStream
 class ZipExtractorTest {
     @get:Rule val temp = TemporaryFolder()
 
+    @Test fun browserImportClassifiesElfByHeaderBeforeExtension() {
+        val header = byteArrayOf(127, 69, 76, 70)
+        assertEquals("binaries", ZipExtractor.importKind("program", header))
+        assertEquals("binaries", ZipExtractor.importKind("misleading.sh", header))
+    }
+
+    @Test fun browserImportAllowsCaseInsensitiveShIncludingShortFiles() {
+        assertEquals("scripts", ZipExtractor.importKind("脚本.SH", "#!/s".toByteArray()))
+        assertEquals("scripts", ZipExtractor.importKind("empty.sh", byteArrayOf()))
+    }
+
+    @Test fun browserImportRejectsNonExecutableFilesAndIncompleteElfHeaders() {
+        rejects { ZipExtractor.importKind("photo.jpg", byteArrayOf(1, 2, 3, 4)) }
+        rejects { ZipExtractor.importKind("program", byteArrayOf(127, 69, 76)) }
+    }
+
     private fun archive(vararg entries: Pair<String, String>, charset: Charset = Charsets.UTF_8, stored: Boolean = false): File {
         val file = temp.newFile()
         ZipOutputStream(file.outputStream(), charset).use { zip ->
