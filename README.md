@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/tag/v1.3.9"><img alt="Release v1.3.9" src="https://img.shields.io/badge/release-v1.3.9-28B9CF?style=flat-square"></a>
+  <a href="https://github.com/givsk983/tubing/releases/tag/v1.4.0"><img alt="Release v1.4.0" src="https://img.shields.io/badge/release-v1.4.0-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/download/v1.3.9/tubing-v1.3.9.apk">下载 APK</a>
+  <a href="https://github.com/givsk983/tubing/releases/download/v1.4.0/tubing-v1.4.0.apk">下载 APK</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.3.9` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.4.0` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -49,6 +49,10 @@
 从任一来源选中 ZIP，或点击内置管理器中的 ZIP 文件名，会先显示“ZIP 导入方式”。可以将整个 ZIP 解压为一个项目，项目名称默认 ZIP 文件名去掉 `.zip`，也可手动修改；所有目录、程序和资源保存在 `/data/adb/root_executor/项目名称`，重名时拒绝覆盖。项目内的 SH / ELF 程序会出现在执行列表中，并从程序所在目录启动。也可选择“浏览并选择包内文件”，继续使用原有预览与挑选导入功能。ZIP 与普通文件需分开选择。
 
 “更多导入”可临时切换来源或选择同步路径；底部导航栏上滑可使用收藏路径。目录与符号链接不能作为普通待导入文件，其他类型文件导入时显示错误。
+
+文件管理底部导航栏上滑后，可在“收藏 / 最近”之间切换。“最近”保存最近成功访问的 20 个目录，重复访问会移到最前面，普通刷新不会改变顺序，重启后保留。点击记录在当前文件栏打开；“清空最近”只清除记录，不影响收藏或文件。
+
+“选择文件”首页将 ZIP 项目显示为单独文件夹，不再把项目里的所有程序混排。点项目后可按内部目录逐层浏览，点具体程序完成选择；上级按钮和返回键都能返回上一层。单独导入的程序与旧目录中的程序仍可在首页直接选择。
 
 ## 执行路径
 
@@ -80,16 +84,16 @@
 
 ### 2. 安装测试版
 
-从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.3.9) 下载 `tubing-v1.3.9.apk`，可通过 ADB 覆盖安装并保留数据。
+从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.4.0) 下载 `tubing-v1.4.0.apk`，可通过 ADB 覆盖安装并保留数据。
 
 ```bash
-adb install -r tubing-v1.3.9.apk
+adb install -r tubing-v1.4.0.apk
 ```
 
 发布 APK 的 SHA-256：
 
 ```text
-877b3e8ce5c1d814d7878d10bc39fe8a0b372bdb6fc7a6fa5de12dce2c9d5652
+9a77574d110f9d3ed4c4602aedb6aed781b05851bbb0b45c3404e396b3287768
 ```
 
 ### 3. 完成第一次执行
@@ -157,7 +161,7 @@ app/src/main/java/com/stealth/rootexecutor/
 
 ## 当前状态
 
-`v1.3.9` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选并统一导入 SH/ELF 文件。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
+`v1.4.0` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选并统一导入 SH/ELF 文件。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
 
 ## 第三方组件与许可
 

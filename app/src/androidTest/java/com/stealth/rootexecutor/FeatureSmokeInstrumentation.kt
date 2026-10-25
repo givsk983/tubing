@@ -2,15 +2,23 @@ package com.stealth.rootexecutor
 
 import android.app.Activity
 import android.app.Instrumentation
+import android.app.Dialog
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.widget.CheckBox
 import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Button
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -156,7 +164,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 }
                 checks.add("Legacy $kind identities are still listed and executable in Pipe and PTY")
             }
-            checkImportCheckbox(fixture, checks)
+            checkImportCheckbox(fixture, projectName, checks)
         } catch (error: Throwable) { failure = error }
         finally {
             imported.forEach { runCatching { root.delete(it) } }
@@ -177,7 +185,13 @@ class FeatureSmokeInstrumentation : Instrumentation() {
 
     private fun onUi(action: () -> Unit) {
         var failure: Throwable? = null
-        runOnMainSync { try { action() } catch (error: Throwable) { failure = error } }
+        val completed = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            try { action() } catch (error: Throwable) { failure = error } finally { completed.countDown() }
+        }
+        check(completed.await(10, TimeUnit.SECONDS)) {
+            "UI action timed out:\n" + Looper.getMainLooper().thread.stackTrace.joinToString("\n")
+        }
         failure?.let { throw it }
     }
 
@@ -193,6 +207,14 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             }.forEach { check(root.delete(it).code == 0) }
             check(root.deletePath("${root.managedRoot}/项目-$id", true).code == 0)
             check(root.deletePath(fixture.absolutePath, true).code == 0)
+            val preferences = targetContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            val saved = org.json.JSONArray(preferences.getString("recentBrowserDirectories", "[]"))
+            val retained = org.json.JSONArray()
+            for (index in 0 until saved.length()) {
+                val path = saved.getString(index)
+                if (path != fixture.absolutePath && !path.startsWith(fixture.absolutePath + "/")) retained.put(path)
+            }
+            preferences.edit().putString("recentBrowserDirectories", retained.toString()).commit()
         }
         finish(if (result.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
             putString("stream", result.exceptionOrNull()?.stackTraceToString() ?: "Interrupted test fixture cleaned: $id")
@@ -202,7 +224,9 @@ class FeatureSmokeInstrumentation : Instrumentation() {
     private fun descendants(view: View): List<View> = listOf(view) +
         if (view is ViewGroup) (0 until view.childCount).flatMap { descendants(view.getChildAt(it)) } else emptyList()
 
-    private fun checkImportCheckbox(fixture: File, checks: MutableList<String>) {
+    private fun checkImportCheckbox(fixture: File, projectName: String, checks: MutableList<String>) {
+        val preferences = targetContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val previousRecents = preferences.getString("recentBrowserDirectories", null)
         val activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
             var ready = false
@@ -223,7 +247,6 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             var checkbox: CheckBox? = null
             repeat(50) {
                 if (checkbox == null) {
-                    waitForIdleSync()
                     onUi {
                         checkbox = descendants(activity.window.decorView).filterIsInstance<CheckBox>().firstOrNull {
                             it.contentDescription == "选择 完整项目.zip"
@@ -233,6 +256,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 }
             }
             val box = checkNotNull(checkbox) { "Import checkbox not found" }
+            SystemClock.sleep(100)
             var originalHeight = 0
             var originalTop = 0
             onUi {
@@ -241,7 +265,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 originalTop = IntArray(2).also { scroll.getLocationOnScreen(it) }[1]
                 box.performClick()
             }
-            waitForIdleSync()
+            SystemClock.sleep(100)
             onUi {
                 val selection = MainActivity::class.java.getDeclaredField("rightSelection").apply { isAccessible = true }.get(activity) as BrowserSelection
                 check(box.isChecked && File(fixture, "完整项目.zip").absolutePath in selection.selectedPaths)
@@ -251,6 +275,43 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 check(!box.isChecked && selection.selectedPaths.isEmpty())
             }
             checks.add("Import UI: ZIP checkbox selects and deselects without opening preview or moving the list")
-        } finally { onUi { activity.finish() } }
+            onUi {
+                MainActivity::class.java.getDeclaredMethod("clearBrowserSelection", Boolean::class.javaPrimitiveType).apply { isAccessible = true }.invoke(activity, false)
+                val chooser = MainActivity::class.java.getDeclaredMethod("openFavorites").apply { isAccessible = true }.invoke(activity) as Dialog
+                val rootView = chooser.window!!.decorView
+                descendants(rootView).filterIsInstance<Button>().first { it.text == "最近" }.performClick()
+                check(descendants(rootView).filterIsInstance<TextView>().any { it.text == fixture.absolutePath })
+                chooser.dismiss()
+            }
+            checks.add("Recent directories UI: successfully visited directory is shown in the new Recent tab")
+            var selectedProgram = false
+            sendStatus(0, Bundle().apply { putString("stream", "Checking grouped project picker\n") })
+            onUi {
+                val method = MainActivity::class.java.declaredMethods.first { it.name == "showExecutionFilePicker" }.apply { isAccessible = true }
+                val callback: () -> Unit = { selectedProgram = true }
+                val files = listOf(ManagedFile("project", "$projectName/bin/run (2).SH", "755"))
+                val chooser = method.invoke(activity, files, callback) as Dialog
+                val rootView = chooser.window!!.decorView
+                fun clickTitle(title: String) {
+                    sendStatus(0, Bundle().apply { putString("stream", "Click: $title\n") })
+                    val label = descendants(rootView).filterIsInstance<TextView>().first { it.text == title }
+                    var target: View? = label
+                    while (target != null && !target.isClickable) target = target.parent as? View
+                    check(checkNotNull(target) { "No clickable card for $title" }.performClick())
+                }
+                check(descendants(rootView).filterIsInstance<TextView>().none { it.text == "run (2).SH" })
+                clickTitle("📁 $projectName")
+                check(descendants(rootView).filterIsInstance<TextView>().none { it.text == "run (2).SH" })
+                clickTitle("📁 bin")
+                clickTitle("run (2).SH")
+                val selected = MainActivity::class.java.getDeclaredField("selected").apply { isAccessible = true }.get(activity) as ManagedFile
+                check(selectedProgram && selected.kind == "project" && selected.name == "$projectName/bin/run (2).SH")
+            }
+            checks.add("Execution picker UI: project stays grouped, nested folders open, selecting a program preserves its full project identity")
+        } finally {
+            preferences.edit().apply {
+                if (previousRecents == null) remove("recentBrowserDirectories") else putString("recentBrowserDirectories", previousRecents)
+            }.commit()
+        }
     }
 }

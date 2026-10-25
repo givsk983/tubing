@@ -68,6 +68,8 @@ class MainActivity : Activity() {
     private var foreground = 0
     private var leftPath = root.managedRoot
     private var rightPath = "/storage/emulated/0"
+    private var lastRecordedLeftPath: String? = null
+    private var lastRecordedRightPath: String? = null
     private val leftBrowserHistory = mutableListOf<String>()
     private val rightBrowserHistory = mutableListOf<String>()
     private var lastBackPressedAt = 0L
@@ -465,6 +467,19 @@ class MainActivity : Activity() {
         val filtered = visibleBrowserEntries(left)
         val selection = browserSelection(left)
         selection.retain(selectableBrowserEntries(left).map { it.path })
+        val canGoParent = (if (left) leftPath else rightPath).trimEnd('/').isNotEmpty()
+        list.addView(text("📁  ..", 12f, foreground).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(3), dp(3), dp(5), dp(3))
+            minHeight = dp(48)
+            contentDescription = if (canGoParent) "返回上级目录" else "已在根目录"
+            setOnClickListener { focusBrowser(left); goParent(left) }
+            isEnabled = canGoParent
+            alpha = if (canGoParent) 1f else 0.4f
+        }, LinearLayout.LayoutParams(-1, -2))
+        list.addView(View(this).apply {
+            setBackgroundColor(if (dark) Color.rgb(34, 47, 62) else Color.rgb(226, 233, 238))
+        }, LinearLayout.LayoutParams(-1, dp(1)))
         if (filtered.isEmpty()) list.addView(text("目录为空", 12f, foreground))
         filtered.forEach { entry ->
             val isSelected = entry.path in selection.selectedPaths
@@ -642,6 +657,16 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (isDestroyed || tab != 1 || left != leftPath || right != rightPath) return@runOnUiThread
                 leftEntries = leftResult.second; rightEntries = rightResult.second
+                // Record only successful directory visits; ordinary refreshes keep the same order.
+                listOf(!activeBrowserLeft, activeBrowserLeft).forEach { paneLeft ->
+                    val path = if (paneLeft) left else right
+                    val result = if (paneLeft) leftResult.first else rightResult.first
+                    val lastPath = if (paneLeft) lastRecordedLeftPath else lastRecordedRightPath
+                    if (result.code == 0 && path != lastPath) {
+                        rememberBrowserDirectory(path)
+                        if (paneLeft) lastRecordedLeftPath = path else lastRecordedRightPath = path
+                    }
+                }
                 if (leftResult.first.code != 0) message("左侧目录无法读取", leftResult.first.output.ifBlank { "请检查目录路径和访问权限" })
                 if (rightResult.first.code != 0) message("右侧目录无法读取", rightResult.first.output.ifBlank { "请检查目录路径和访问权限" })
                 fileManagerPage()
@@ -654,6 +679,7 @@ class MainActivity : Activity() {
         val history = if (left) leftBrowserHistory else rightBrowserHistory
         if (rememberCurrent) history.add(if (left) leftPath else rightPath) else history.clear()
         clearBrowserSelection(left)
+        if (left) lastRecordedLeftPath = null else lastRecordedRightPath = null
         if (left) leftPath = path else rightPath = path
         refreshBrowsers()
     }
@@ -664,6 +690,7 @@ class MainActivity : Activity() {
         lastBackPressedAt = 0L
         val previous = history.removeAt(history.lastIndex)
         clearBrowserSelection(activeBrowserLeft)
+        if (activeBrowserLeft) lastRecordedLeftPath = null else lastRecordedRightPath = null
         if (activeBrowserLeft) leftPath = previous else rightPath = previous
         refreshBrowsers()
         return true
@@ -1096,6 +1123,7 @@ class MainActivity : Activity() {
                                     browserImportMode = false
                                     leftSelection.clear(); rightSelection.clear()
                                     leftPath = "${root.managedRoot}/$name"
+                                    lastRecordedLeftPath = null
                                     leftEntries = emptyList(); leftBrowserHistory.clear()
                                     activeBrowserLeft = true; tab = 1; showTab()
                                     message("项目导入完成", details)
@@ -1160,6 +1188,7 @@ class MainActivity : Activity() {
         browserImportMode = true
         activeBrowserLeft = false
         rightPath = "/storage/emulated/0/Download"
+        lastRecordedRightPath = null
         rightEntries = emptyList()
         rightBrowserHistory.clear()
         tab = 1
@@ -1310,19 +1339,67 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun openFavorites() {
-        val sources = syncSources()
-        styledDialog("收藏夹", "点击路径，在当前文件栏打开", { dialog ->
-            column().apply {
-                if (sources.isEmpty()) addView(text("暂无收藏路径。", 14f, mutedColor()))
-                sources.forEach { source ->
-                    addView(optionCard(source.label, source.path) { dialog.dismiss(); navigateBrowser(activeBrowserLeft, source.path) })
-                }
+    private fun recentBrowserDirectories(): List<String> = runCatching {
+        val array = org.json.JSONArray(prefs.getString("recentBrowserDirectories", "[]"))
+        RecentDirectories.clean(List(array.length()) { array.getString(it) })
+    }.getOrDefault(emptyList())
+
+    private fun rememberBrowserDirectory(path: String) {
+        val array = org.json.JSONArray()
+        RecentDirectories.visit(recentBrowserDirectories(), path).forEach { array.put(it) }
+        prefs.edit().putString("recentBrowserDirectories", array.toString()).apply()
+    }
+
+    private fun openFavorites(): android.app.Dialog {
+        val targetLeft = activeBrowserLeft
+        var recent = false
+        val listing = column()
+        lateinit var dialog: android.app.Dialog
+        fun render() {
+            listing.removeAllViews()
+            val tabs = LinearLayout(this)
+            listOf(false to "收藏", true to "最近").forEach { (isRecent, label) ->
+                tabs.addView(button(label) { recent = isRecent; render() }.apply {
+                    setTextColor(if (recent == isRecent) accent else mutedColor())
+                }, LinearLayout.LayoutParams(0, dp(48), 1f))
             }
-        }, { dialog -> listOf(
-            "管理路径" to { dialog.dismiss(); manageSyncSources() },
-            "关闭" to { dialog.dismiss() }
-        ) })
+            listing.addView(tabs)
+            if (recent) {
+                val paths = recentBrowserDirectories()
+                listing.addView(text("最近访问的 ${paths.size} 个目录 · 最多保留 ${RecentDirectories.LIMIT} 个", 12f, mutedColor()))
+                if (paths.isEmpty()) listing.addView(text("暂无最近访问目录。", 14f, mutedColor()))
+                paths.forEach { path ->
+                    val name = when (path) {
+                        root.managedRoot -> "脚本库"
+                        "/storage/emulated/0" -> "设备存储"
+                        "/" -> "/"
+                        else -> path.substringAfterLast('/')
+                    }
+                    listing.addView(optionCard(name, path) {
+                        dialog.dismiss(); navigateBrowser(targetLeft, path, rememberCurrent = true)
+                    })
+                }
+                if (paths.isNotEmpty()) listing.addView(button("清空最近") {
+                    confirmAction("清空最近目录", "只清除最近访问记录，不影响收藏和目录文件。", "清空") {
+                        prefs.edit().remove("recentBrowserDirectories").apply()
+                        render()
+                    }
+                })
+            } else {
+                val sources = syncSources()
+                if (sources.isEmpty()) listing.addView(text("暂无收藏路径。", 14f, mutedColor()))
+                sources.forEach { source ->
+                    listing.addView(optionCard(source.label, source.path) {
+                        dialog.dismiss(); navigateBrowser(targetLeft, source.path)
+                    })
+                }
+                listing.addView(button("管理路径") { dialog.dismiss(); manageSyncSources() })
+            }
+        }
+        render()
+        dialog = styledDialog("收藏夹与最近", "点击路径，在${if (targetLeft) "左" else "右"}侧文件栏打开", { listing },
+            { chooser -> listOf("关闭" to { chooser.dismiss() }) })
+        return dialog
     }
 
     private fun saveSyncSources(sources: List<SyncSource>) {
@@ -1460,16 +1537,43 @@ class MainActivity : Activity() {
     }
     private fun chooseFile(afterSelection: () -> Unit = {}) = work({ root.list().let { (r, files) -> check(r.code == 0) { r.output }; files } }) { files ->
         if (files.isEmpty()) message("暂无文件", "请先导入 SH 或 ELF 文件。")
-        else styledDialog("选择执行文件", "共 ${files.size} 个文件 · 点击选择", { dialog ->
-            column().apply {
-                files.forEach { file ->
-                    addView(optionCard(file.name, "${root.filePath(file)} · 权限 ${file.mode}",
-                        selected?.kind == file.kind && selected?.name == file.name) {
-                        selected = file; dialog.dismiss(); showTab(); afterSelection()
-                    })
-                }
+        else showExecutionFilePicker(files, afterSelection)
+    }
+
+    private fun showExecutionFilePicker(files: List<ManagedFile>, afterSelection: () -> Unit): android.app.Dialog {
+        var prefix = ""
+        val listing = column()
+        lateinit var dialog: android.app.Dialog
+        fun render() {
+            listing.removeAllViews()
+            listing.addView(text(if (prefix.isEmpty()) "脚本库 · 项目按文件夹显示" else "项目：${prefix.trimEnd('/')}", 13f, accent))
+            if (prefix.isNotEmpty()) listing.addView(button("↑ 上级") { prefix = ExecutionLibrary.parent(prefix); render() })
+            val folders = ExecutionLibrary.folders(files, prefix)
+            val programs = ExecutionLibrary.programs(files, prefix)
+            folders.forEach { folder ->
+                listing.addView(optionCard("📁 ${folder.name}", "${folder.programCount} 个程序 · 点击进入",
+                    selected?.let { it.kind == "project" && it.name.startsWith(folder.prefix) } == true) {
+                    prefix = folder.prefix; render()
+                })
             }
-        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
+            programs.forEach { file ->
+                listing.addView(optionCard(file.name.substringAfterLast('/'), "${root.filePath(file)} · 权限 ${file.mode}",
+                    selected?.kind == file.kind && selected?.name == file.name) {
+                    selected = file; dialog.dismiss(); showTab(); afterSelection()
+                })
+            }
+            if (folders.isEmpty() && programs.isEmpty()) listing.addView(text("暂无可执行程序。", 14f, mutedColor()))
+        }
+        render()
+        dialog = styledDialog("选择执行文件", "点击项目进入目录，点击程序完成选择", { listing },
+            { chooser -> listOf("取消" to { chooser.dismiss() }) })
+        dialog.setOnKeyListener { _, code, event ->
+            if (code == KeyEvent.KEYCODE_BACK && prefix.isNotEmpty()) {
+                if (event.action == KeyEvent.ACTION_UP) { prefix = ExecutionLibrary.parent(prefix); render() }
+                true
+            } else false
+        }
+        return dialog
     }
 
     private fun launch(inputSteps: List<String> = emptyList(), trackInputHistory: Boolean = true): Boolean {
@@ -1827,39 +1931,63 @@ class MainActivity : Activity() {
             var name = existing?.name ?: "方式${quickShortcuts().size + 1}"
             var file = files.firstOrNull { it.kind == existing?.kind && it.name == existing?.fileName } ?: files.first()
             var presetName = existing?.presetName?.takeIf { selected -> readInputPresets(file).any { it.name == selected } }
-            val form = column().apply { setPadding(dp(20), dp(8), dp(20), 0) }
-            val nameInput = EditText(this).apply { hint = "快捷方式名称"; setSingleLine(true); setText(name) }
+            val form = column()
+            val nameInput = formInput("快捷方式名称", name)
             val fileButton = button("脚本：${file.name}") { }
             val presetButton = button("输入方案：${presetName ?: "不使用"}") { }
             fileButton.setOnClickListener {
-                AlertDialog.Builder(this).setTitle("选择脚本")
-                    .setItems(files.map { it.name }.toTypedArray()) { _, index ->
-                        file = files[index]
-                        presetName = null
-                        fileButton.text = "脚本：${file.name}"
-                        presetButton.text = "输入方案：不使用"
-                    }.show()
+                styledDialog("选择脚本", "选择此快捷方式要运行的文件", { dialog ->
+                    column().apply {
+                        files.forEach { candidate ->
+                            addView(optionCard(candidate.name, "", candidate.kind == file.kind && candidate.name == file.name) {
+                                file = candidate
+                                presetName = null
+                                fileButton.text = "脚本：${file.name}"
+                                presetButton.text = "输入方案：不使用"
+                                dialog.dismiss()
+                            })
+                        }
+                    }
+                }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
             }
             presetButton.setOnClickListener {
                 val presets = readInputPresets(file)
-                val options = listOf("不使用输入方案") + presets.map { "${it.name} · ${it.steps.size} 项" }
-                AlertDialog.Builder(this).setTitle("选择输入方案").setItems(options.toTypedArray()) { _, index ->
-                    presetName = if (index == 0) null else presets[index - 1].name
-                    presetButton.text = "输入方案：${presetName ?: "不使用"}"
-                }.show()
+                styledDialog("选择输入方案", file.name, { dialog ->
+                    column().apply {
+                        addView(optionCard("不使用输入方案", "", presetName == null) {
+                            presetName = null
+                            presetButton.text = "输入方案：不使用"
+                            dialog.dismiss()
+                        })
+                        presets.forEach { preset ->
+                            addView(optionCard(preset.name, "${preset.steps.size} 项输入", presetName == preset.name) {
+                                presetName = preset.name
+                                presetButton.text = "输入方案：${preset.name}"
+                                dialog.dismiss()
+                            })
+                        }
+                        addView(button("＋ 新建输入方案") {
+                            dialog.dismiss()
+                            editInputPreset(file, null) { preset ->
+                                presetName = preset.name
+                                presetButton.text = "输入方案：${preset.name}"
+                            }
+                        }, LinearLayout.LayoutParams(-1, dp(50)))
+                    }
+                }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
             }
+            form.addView(text("快捷方式名称", 13f, mutedColor()))
             form.addView(nameInput)
             form.addView(fileButton)
             form.addView(presetButton)
             form.addView(text("按下 Start 后自动启动脚本并按顺序发送方案输入。", 12f, accent))
-            AlertDialog.Builder(this).setTitle(if (existing == null) "新建快捷方式" else "编辑快捷方式")
-                .setView(form).setNegativeButton("取消", null).setPositiveButton("保存", null).create().also { dialog ->
-                    dialog.setOnShowListener {
-                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            styledDialog(if (existing == null) "新建快捷方式" else "编辑快捷方式", "", { form }, { dialog -> listOf(
+                        "取消" to { dialog.dismiss() },
+                        "保存" to save@{
                             name = nameInput.text.toString().trim()
                             val current = quickShortcuts()
-                            if (name.isBlank()) { message("名称不能为空", "请填写快捷方式名称。"); return@setOnClickListener }
-                            if (current.any { it.name.equals(name, true) && it.name != existing?.name }) { message("名称已存在", "请使用另一个名称。"); return@setOnClickListener }
+                            if (name.isBlank()) { nameInput.error = "请填写快捷方式名称"; nameInput.requestFocus(); return@save }
+                            if (current.any { it.name.equals(name, true) && it.name != existing?.name }) { nameInput.error = "名称已存在，请使用另一个名称"; nameInput.requestFocus(); return@save }
                             val shortcut = QuickShortcut(name, file.kind, file.name, presetName)
                             val index = current.indexOfFirst { it.name == existing?.name }
                             if (index >= 0) current[index] = shortcut else current.add(shortcut)
@@ -1870,9 +1998,7 @@ class MainActivity : Activity() {
                             dialog.dismiss()
                             manageQuickShortcuts()
                         }
-                    }
-                    dialog.show()
-                }
+            ) })
         }
     }
 
@@ -2177,7 +2303,7 @@ class MainActivity : Activity() {
         }, { dialog -> listOf("关闭" to { dialog.dismiss() }) })
     }
 
-    private fun editInputPreset(file: ManagedFile, index: Int?) {
+    private fun editInputPreset(file: ManagedFile, index: Int?, onSaved: ((ScriptInputPreset) -> Unit)? = null) {
         val current = index?.let { readInputPresets(file).getOrNull(it) }
         val nameInput = formInput("例如：默认配置", current?.name ?: "")
         val stepsInput = formInput("每行一项输入", current?.steps?.joinToString("\n") ?: "", multiline = true).apply { minLines = 4 }
@@ -2207,7 +2333,8 @@ class MainActivity : Activity() {
                 if (target >= 0) updated[target] = preset else updated.add(preset)
                 saveInputPresets(file, updated)
                 if (current != null && current.name != name) updateShortcutPresetReferences(file, current.name, name)
-                dialog.dismiss(); showInputPresets()
+                dialog.dismiss()
+                if (onSaved != null) onSaved(preset) else showInputPresets()
             }
         ) })
     }
