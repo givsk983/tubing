@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/tag/v1.4.0"><img alt="Release v1.4.0" src="https://img.shields.io/badge/release-v1.4.0-28B9CF?style=flat-square"></a>
+  <a href="https://github.com/givsk983/tubing/releases/tag/v1.4.1"><img alt="Release v1.4.1" src="https://img.shields.io/badge/release-v1.4.1-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/download/v1.4.0/tubing-v1.4.0.apk">下载 APK</a>
+  <a href="https://github.com/givsk983/tubing/releases/download/v1.4.1/tubing-v1.4.1.apk">下载 APK</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.4.0` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.4.1` 是 Debug 签名测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -40,7 +40,7 @@
 
 点击 ZIP 可浏览内部目录、预览文件内容；长按选择文件或文件夹，再点击“解压所选”，直接解压到另一侧目录或压缩包所在目录。已有同名目标不会被覆盖。
 
-文件管理双栏支持左右滑动文件或文件夹进入选择模式。左滑追加当前项；第一次右滑选中当前项，后续右滑按当前列表顺序追加选中“上次右滑项到本次右滑项”的完整范围（包含两端，支持向上选）。选择模式中点按只追加选择，重复点按保持选中，不打开文件夹或 ZIP，也不改变右滑范围起点。左右栏分别记录选择，可通过“所选操作”复制或删除，多选时删除会二次确认；单选仍可重命名或解压 ZIP。点击“取消选择”或按返回键退出；进入其他目录清空该栏选择，刷新保留仍存在的已选项。
+文件管理双栏支持左右滑动文件或文件夹进入选择模式。左滑追加当前项；第一次右滑选中当前项，后续右滑按当前列表顺序追加选中“上次右滑项到本次右滑项”的完整范围（包含两端，支持向上选）。选择模式中点按只追加选择，重复点按保持选中，不打开文件夹或 ZIP，也不改变右滑范围起点。左右栏分别记录选择，可通过“所选操作”复制或删除，多选时删除会二次确认；单选仍可重命名或解压 ZIP。点击“取消选择”退出选择模式；系统返回键直接进入当前栏上级目录，根目录提示已到顶；进入其他目录清空该栏选择，刷新保留仍存在的已选项。
 
 在执行页点击“导入文件”，可选择“内置文件管理器”“MT 管理器”或“手机文件管理器”。设置页的“默认导入方式”可设为每次询问，或固定使用其中一种；临时切换来源不会改变默认设置。MT 同时支持标准版与 Canary 版，未安装时可改选其他来源。
 
@@ -51,6 +51,12 @@
 “更多导入”可临时切换来源或选择同步路径；底部导航栏上滑可使用收藏路径。目录与符号链接不能作为普通待导入文件，其他类型文件导入时显示错误。
 
 文件管理底部导航栏上滑后，可在“收藏 / 最近”之间切换。“最近”保存最近成功访问的 20 个目录，重复访问会移到最前面，普通刷新不会改变顺序，重启后保留。点击记录在当前文件栏打开；“清空最近”只清除记录，不影响收藏或文件。
+
+1.4.1 起，右上角三横杠菜单集中提供“刷新 / 搜索 / 排列方式”。搜索按名称筛选当前选中栏的目录内容，点击搜索提示可清除，进入其他目录时自动清除。排列支持名称、修改时间和大小的两个方向，文件夹优先，左右栏分别保存。
+
+上下滚动与左右滑选会按手势方向区分，滚动边缘带轻微渐隐和细滚动条反馈；刷新或返回已浏览目录时，两栏分别恢复滚动位置。
+
+设置页“检查更新”会查询 GitHub 已发布的正式版和测试版，并与当前版本比较。发现新版可查看更新说明、打开发布页或通过浏览器下载 APK；网络失败会显示重试提示，应用不会自动安装更新。
 
 “选择文件”首页将 ZIP 项目显示为单独文件夹，不再把项目里的所有程序混排。点项目后可按内部目录逐层浏览，点具体程序完成选择；上级按钮和返回键都能返回上一层。单独导入的程序与旧目录中的程序仍可在首页直接选择。
 
@@ -84,16 +90,16 @@
 
 ### 2. 安装测试版
 
-从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.4.0) 下载 `tubing-v1.4.0.apk`，可通过 ADB 覆盖安装并保留数据。
+从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.4.1) 下载 `tubing-v1.4.1.apk`，可通过 ADB 覆盖安装并保留数据。
 
 ```bash
-adb install -r tubing-v1.4.0.apk
+adb install -r tubing-v1.4.1.apk
 ```
 
 发布 APK 的 SHA-256：
 
 ```text
-b4009eb2e644ee7a3bfe198a2faab8377c25bcc5785db071ad4089b7b2d9d054
+6ad89e5e4885f2c90d7a8beee66213344881e368e4ca8a94b716798b18f8dbd7
 ```
 
 ### 3. 完成第一次执行
@@ -161,7 +167,7 @@ app/src/main/java/com/stealth/rootexecutor/
 
 ## 当前状态
 
-`v1.4.0` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选并统一导入 SH/ELF 文件。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
+`v1.4.1` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选并统一导入 SH/ELF 文件。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
 
 ## 第三方组件与许可
 

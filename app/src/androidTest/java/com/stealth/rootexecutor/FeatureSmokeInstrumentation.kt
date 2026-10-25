@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
+import android.view.MotionEvent
 import android.widget.CheckBox
 import android.widget.ScrollView
 import android.widget.TextView
@@ -25,9 +26,22 @@ import java.util.zip.ZipOutputStream
 /** Device-only checks against the actual Android ZIP, root shell and execution backends. */
 class FeatureSmokeInstrumentation : Instrumentation() {
     private var cleanupFixtureId: String? = null
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); cleanupFixtureId = arguments?.getString("cleanup_fixture_id"); start() }
+    private var updatesOnly = false
+    private var scrollingOnly = false
+    private var browserPerformanceOnly = false
+    override fun onCreate(arguments: Bundle?) {
+        super.onCreate(arguments)
+        cleanupFixtureId = arguments?.getString("cleanup_fixture_id")
+        updatesOnly = arguments?.getString("updates_only") == "true"
+        scrollingOnly = arguments?.getString("scrolling_only") == "true"
+        browserPerformanceOnly = arguments?.getString("browser_performance_only") == "true"
+        start()
+    }
 
     override fun onStart() {
+        if (updatesOnly) { checkUpdates(); return }
+        if (scrollingOnly) { checkBrowserScrolling(); return }
+        if (browserPerformanceOnly) { checkBrowserPerformance(); return }
         cleanupFixtureId?.let { cleanupPreviousFixture(it); return }
         val root = RootExecutor()
         val id = UUID.randomUUID().toString()
@@ -183,6 +197,292 @@ class FeatureSmokeInstrumentation : Instrumentation() {
         finish(if (failure == null) Activity.RESULT_OK else Activity.RESULT_CANCELED, result)
     }
 
+    private fun checkBrowserPerformance() {
+        val preferences = targetContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val previousRecents = preferences.getString("recentBrowserDirectories", null)
+        val releaseReads = CountDownLatch(1)
+        val childStarted = CountDownLatch(1)
+        var activity: Activity? = null
+        var requests: BrowserRequestTokens? = null
+        val result = runCatching {
+            val screen = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            activity = screen
+            fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
+            var ready = false
+            repeat(60) { if (!ready) { onUi { ready = field("granted").getBoolean(screen) }; if (!ready) SystemClock.sleep(100) } }
+            check(ready)
+            val rootReader = RootExecutor()
+            var scanStart = SystemClock.uptimeMillis()
+            check(rootReader.browse(rootReader.managedRoot).first.code == 0)
+            val libraryScanMs = SystemClock.uptimeMillis() - scanStart
+            scanStart = SystemClock.uptimeMillis()
+            check(rootReader.browse("/storage/emulated/0").first.code == 0)
+            val deviceScanMs = SystemClock.uptimeMillis() - scanStart
+            val parent = "/performance-fixture/a"
+            val child = "$parent/child"
+            val other = "/performance-fixture/b"
+            val parentEntries = listOf(BrowserEntry(child, "child", "d", 0, 0)) +
+                (0 until 120).map { BrowserEntry("$parent/file-$it", "file-$it", "f", 0, 0) }
+            val refreshed = parentEntries + BrowserEntry("$parent/new-file", "new-file", "f", 0, 0)
+            val requested = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val read: (String) -> Pair<CommandResult, List<BrowserEntry>> = { path ->
+                requested.add(path)
+                if (path == child) childStarted.countDown()
+                check(releaseReads.await(5, TimeUnit.SECONDS))
+                CommandResult(0, "") to if (path == parent) refreshed else emptyList()
+            }
+            val render = MainActivity::class.java.getDeclaredMethod("fileManagerPage").apply { isAccessible = true }
+            val navigate = MainActivity::class.java.getDeclaredMethod("navigateBrowser", Boolean::class.javaPrimitiveType, String::class.java).apply { isAccessible = true }
+            onUi {
+                requests = field("browserRequests").get(screen) as BrowserRequestTokens
+                field("browserDirectoryReader").set(screen, read)
+                field("tab").setInt(screen, 1)
+                field("leftPath").set(screen, parent); field("rightPath").set(screen, other)
+                field("leftEntries").set(screen, parentEntries); field("rightEntries").set(screen, parentEntries)
+                (field("directoryCache").get(screen) as BrowserDirectoryCache).put(parent, parentEntries)
+                render.invoke(screen)
+            }
+            SystemClock.sleep(150)
+            var otherPane: View? = null
+            var loadingPaintMs = 0L
+            var cachedPaintMs = 0L
+            onUi {
+                otherPane = (field("browserPanes").get(screen) as ViewGroup).getChildAt(2)
+                val start = SystemClock.uptimeMillis()
+                navigate.invoke(screen, true, child)
+                loadingPaintMs = SystemClock.uptimeMillis() - start
+                check((field("browserLoading").get(screen) as BooleanArray)[0])
+                check(descendants(screen.window.decorView).filterIsInstance<TextView>().any { it.text == "正在读取目录…" })
+                check((field("browserPanes").get(screen) as ViewGroup).getChildAt(2) === otherPane)
+            }
+            check(childStarted.await(2, TimeUnit.SECONDS))
+            onUi {
+                val start = SystemClock.uptimeMillis()
+                navigate.invoke(screen, true, parent)
+                cachedPaintMs = SystemClock.uptimeMillis() - start
+                check(field("leftEntries").get(screen) == parentEntries) { "Cache was not displayed before reads completed" }
+                check(!(field("browserLoading").get(screen) as BooleanArray)[0])
+                val cachedPane = (field("browserPanes").get(screen) as ViewGroup).getChildAt(0)
+                check(descendants(cachedPane).filterIsInstance<TextView>().any { it.text == parent })
+                check(descendants(cachedPane).filterIsInstance<TextView>().none { it.text == "正在读取目录…" })
+                check((field("browserPanes").get(screen) as ViewGroup).getChildAt(2) === otherPane)
+            }
+            // Complete the obsolete child read and the current parent read together.
+            releaseReads.countDown()
+            var updated = false
+            repeat(80) {
+                if (!updated) {
+                    onUi { updated = field("leftEntries").get(screen) == refreshed }
+                    if (!updated) SystemClock.sleep(25)
+                }
+            }
+            check(updated) { "Background validation did not refresh the cached directory" }
+            onUi {
+                check(field("leftPath").get(screen) == parent)
+                check((field("browserPanes").get(screen) as ViewGroup).getChildAt(2) === otherPane)
+                check(!requested.contains(other)) { "Navigation reread the other pane" }
+            }
+            "Root scan samples: library ${libraryScanMs}ms, device ${deviceScanMs}ms.\nBrowser navigation UI preparation: uncached loading ${loadingPaintMs}ms, cached pane ${cachedPaintMs}ms; both updated before blocked reads completed. Other pane retained; stale child result ignored; cache refreshed in background.\n"
+        }
+        releaseReads.countDown()
+        requests?.invalidateAll()
+        activity?.let { screen -> onUi { screen.finish() } }
+        preferences.edit().apply {
+            if (previousRecents == null) remove("recentBrowserDirectories") else putString("recentBrowserDirectories", previousRecents)
+        }.commit()
+        finish(if (result.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
+            putString("stream", result.getOrElse { it.stackTraceToString() })
+        })
+    }
+
+    private fun checkBrowserScrolling() {
+        var activity: Activity? = null
+        val result = runCatching {
+            val screen = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            activity = screen
+            fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
+            var ready = false
+            repeat(60) {
+                if (!ready) {
+                    onUi { ready = field("granted").getBoolean(screen) }
+                    if (!ready) SystemClock.sleep(100)
+                }
+            }
+            check(ready) { "Root gate not ready" }
+            val render = MainActivity::class.java.getDeclaredMethod("fileManagerPage").apply { isAccessible = true }
+            val entries = (0 until 120).map { BrowserEntry("/scroll-fixture/item-$it.sh", "item-%03d.sh".format(it), "f", 10, 0) }
+            onUi {
+                // Synthetic entries only: do not create files, refresh root paths or change preferences.
+                field("tab").setInt(screen, 1)
+                field("leftPath").set(screen, "/scroll-fixture/left")
+                field("rightPath").set(screen, "/scroll-fixture/right")
+                field("leftEntries").set(screen, entries)
+                field("rightEntries").set(screen, entries)
+                render.invoke(screen)
+            }
+            SystemClock.sleep(200)
+            fun panes() = descendants(screen.window.decorView).filterIsInstance<BrowserScrollView>()
+            var left: BrowserScrollView? = null
+            var leftOffset = 0
+            var rightOffset = 0
+            onUi {
+                val scrolls = panes()
+                check(scrolls.size == 2)
+                left = scrolls[0]
+                scrolls[0].scrollTo(0, 420)
+                scrolls[1].scrollTo(0, 630)
+                leftOffset = scrolls[0].scrollY
+                rightOffset = scrolls[1].scrollY
+                check(leftOffset > 0 && rightOffset > 0)
+                render.invoke(screen)
+            }
+            SystemClock.sleep(200)
+            onUi {
+                check(panes()[0].scrollY == leftOffset && panes()[1].scrollY == rightOffset) { "Pane offsets lost on rebuild" }
+                left = panes()[0]
+            }
+            val scroll = checkNotNull(left)
+            fun gesture(horizontal: Boolean) {
+                val downTime = SystemClock.uptimeMillis()
+                val startX = scroll.width * if (horizontal) 0.2f else 0.5f
+                val startY = scroll.height * 0.7f
+                fun event(action: Int, x: Float, y: Float) = onUi {
+                    MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, x, y, 0).also {
+                        scroll.dispatchTouchEvent(it); it.recycle()
+                    }
+                }
+                event(MotionEvent.ACTION_DOWN, startX, startY)
+                repeat(10) { step ->
+                    SystemClock.sleep(18)
+                    val fraction = (step + 1) / 10f
+                    event(MotionEvent.ACTION_MOVE, startX + if (horizontal) scroll.width * 0.6f * fraction else 1f,
+                        startY - if (horizontal) 1f else scroll.height * 0.35f * fraction)
+                }
+                event(MotionEvent.ACTION_UP, startX + if (horizontal) scroll.width * 0.6f else 1f,
+                    startY - if (horizontal) 1f else scroll.height * 0.35f)
+            }
+            gesture(false)
+            SystemClock.sleep(120)
+            onUi {
+                check(scroll.scrollY > leftOffset) { "Vertical swipe did not scroll" }
+                check((field("leftSelection").get(screen) as BrowserSelection).selectedPaths.isEmpty()) { "Vertical scroll selected a file" }
+                // Stop inertia with a tap; this must not become a file click.
+                val now = SystemClock.uptimeMillis()
+                listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP).forEach { action ->
+                    MotionEvent.obtain(now, now + 1, action, scroll.width * 0.5f, scroll.height * 0.5f, 0).also {
+                        scroll.dispatchTouchEvent(it); it.recycle()
+                    }
+                }
+            }
+            SystemClock.sleep(80)
+            onUi { check((field("leftSelection").get(screen) as BrowserSelection).selectedPaths.isEmpty()) { "Stopping a fling clicked a file" } }
+            gesture(true)
+            onUi {
+                check((field("leftSelection").get(screen) as BrowserSelection).selectedPaths.size == 1) { "Horizontal swipe did not select one file" }
+                check(panes()[1].scrollY == rightOffset) { "Other pane moved" }
+            }
+            var navigation: ViewGroup? = null
+            onUi {
+                MainActivity::class.java.getDeclaredMethod("clearBrowserSelection", Boolean::class.javaPrimitiveType)
+                    .apply { isAccessible = true }.invoke(screen, true)
+                navigation = descendants(screen.window.decorView).filterIsInstance<Button>().first { it.text == "↑ 上级" }.parent as ViewGroup
+            }
+            val nav = checkNotNull(navigation)
+            val gestureRoot = field("page").get(screen) as ViewGroup
+            var gestureOrigin: View = nav
+            val density = screen.resources.displayMetrics.density
+            var downTime = 0L
+            fun dragEvent(action: Int, distance: Float) = onUi {
+                if (action == MotionEvent.ACTION_DOWN) downTime = SystemClock.uptimeMillis()
+                val originPosition = IntArray(2).also { gestureOrigin.getLocationOnScreen(it) }
+                val rootPosition = IntArray(2).also { gestureRoot.getLocationOnScreen(it) }
+                MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
+                    originPosition[0] - rootPosition[0] + gestureOrigin.width * 0.5f,
+                    originPosition[1] - rootPosition[1] + gestureOrigin.height * 0.6f - distance, 0).also {
+                    gestureRoot.dispatchTouchEvent(it); it.recycle()
+                }
+            }
+            fun sheet() = field("favoritesSheet").get(screen) as? FavoritesSheet
+            dragEvent(MotionEvent.ACTION_DOWN, 0f)
+            dragEvent(MotionEvent.ACTION_MOVE, 48 * density)
+            SystemClock.sleep(80)
+            var firstFraction = 0f
+            onUi {
+                firstFraction = checkNotNull(sheet()).revealFraction
+                check(firstFraction > 0f && firstFraction < 1f) { "Sheet did not reveal before finger release" }
+            }
+            dragEvent(MotionEvent.ACTION_MOVE, 128 * density)
+            onUi { check(checkNotNull(sheet()).revealFraction > firstFraction) { "Reveal did not follow finger movement" } }
+            dragEvent(MotionEvent.ACTION_CANCEL, 128 * density)
+            SystemClock.sleep(280)
+            onUi { check(sheet() == null) { "Cancelled drag left the sheet open" } }
+            listOf("文件执行", "文件管理", "设置").forEach { label ->
+                onUi { gestureOrigin = descendants(screen.window.decorView).filterIsInstance<Button>().first { it.text == label } }
+                dragEvent(MotionEvent.ACTION_DOWN, 0f)
+                dragEvent(MotionEvent.ACTION_MOVE, 48 * density)
+                SystemClock.sleep(80)
+                onUi { check(checkNotNull(sheet()).revealFraction > 0f) { "Bottom tab $label did not reveal sheet" } }
+                dragEvent(MotionEvent.ACTION_CANCEL, 48 * density)
+                SystemClock.sleep(250)
+                onUi { check(sheet() == null && field("tab").getInt(screen) == 1) { "Swipe triggered tab $label" } }
+            }
+            dragEvent(MotionEvent.ACTION_DOWN, 0f)
+            dragEvent(MotionEvent.ACTION_MOVE, 48 * density)
+            SystemClock.sleep(80)
+            var openDistance = 0f
+            onUi { openDistance = checkNotNull(sheet()).contentView.getChildAt(1).height * 0.7f }
+            dragEvent(MotionEvent.ACTION_MOVE, openDistance)
+            dragEvent(MotionEvent.ACTION_UP, openDistance)
+            SystemClock.sleep(350)
+            onUi {
+                val opened = checkNotNull(sheet())
+                check(opened.revealFraction == 1f)
+                val panel = opened.contentView.getChildAt(1)
+                check(panel.height <= minOf(screen.resources.displayMetrics.heightPixels * 0.6f, 520 * density) + 1)
+                check(opened.contentView.height - opened.contentView.paddingBottom - panel.bottom <= 10 * density) { "Sheet is not bottom anchored" }
+                screen.onBackPressed()
+            }
+            SystemClock.sleep(280)
+            onUi {
+                check(sheet() == null)
+                check(field("leftPath").get(screen) == "/scroll-fixture/left") { "Back navigated behind the sheet" }
+            }
+            dragEvent(MotionEvent.ACTION_DOWN, 0f)
+            dragEvent(MotionEvent.ACTION_UP, 0f)
+            onUi { check(field("tab").getInt(screen) == 2) { "Normal Settings tap stopped working" } }
+            "Browser scrolling and favorites sheet: pane offsets, vertical drag, fling stop, horizontal selection passed; both bottom rows and all three tabs reveal the sheet without switching tabs, drag/cancel/settle/Back pass, and normal Settings tap still works.\n"
+        }
+        activity?.let { screen -> onUi { screen.finish() } }
+        finish(if (result.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
+            putString("stream", result.getOrElse { it.stackTraceToString() })
+        })
+    }
+
+    private fun checkUpdates() {
+        val result = runCatching {
+            val fixture = """[
+                {"tag_name":"v9.0.0","draft":true,"html_url":"https://github.com/givsk983/tubing/releases/tag/v9.0.0"},
+                {"tag_name":"v1.4.2","prerelease":true,"body":null,"html_url":"https://github.com/givsk983/tubing/releases/tag/v1.4.2",
+                 "assets":[{"name":"tubing-v1.4.2.apk","state":"uploaded","browser_download_url":"https://github.com/givsk983/tubing/releases/download/v1.4.2/tubing-v1.4.2.apk"}]},
+                {"tag_name":"v1.4.1","html_url":"https://github.com/givsk983/tubing/releases/tag/v1.4.1"}
+            ]"""
+            val release = checkNotNull(GitHubUpdateChecker.parse(fixture))
+            check(release.tag == "v1.4.2" && release.prerelease && release.notes.isEmpty())
+            check(release.apkUrl?.endsWith("/tubing-v1.4.2.apk") == true)
+            check(AppUpdates.isNewer(release, "1.4.1"))
+            check(GitHubUpdateChecker.parse("[]") == null)
+            check(runCatching { GitHubUpdateChecker.parse("unavailable") }.isFailure)
+            val withoutApk = checkNotNull(GitHubUpdateChecker.parse("""[{"tag_name":"v1.4.2","html_url":"https://github.com/givsk983/tubing/releases/tag/v1.4.2"}]"""))
+            check(withoutApk.apkUrl == null)
+            val online = checkNotNull(GitHubUpdateChecker.check()) { "GitHub has no published releases" }
+            check(online.apkUrl != null) { "Published APK was not recognized" }
+            "Update parser: draft filtering, prereleases, APK matching, empty/malformed data, missing APK fallback passed.\nGitHub HTTPS check: ${online.tag}, APK ${online.apkUrl}\n"
+        }
+        finish(if (result.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
+            putString("stream", result.getOrElse { it.stackTraceToString() })
+        })
+    }
+
     private fun onUi(action: () -> Unit) {
         var failure: Throwable? = null
         val completed = CountDownLatch(1)
@@ -242,7 +542,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             onUi {
                 MainActivity::class.java.getDeclaredMethod("openImportBrowser").apply { isAccessible = true }.invoke(activity)
                 MainActivity::class.java.getDeclaredField("rightPath").apply { isAccessible = true }.set(activity, fixture.absolutePath)
-                MainActivity::class.java.getDeclaredMethod("refreshBrowsers").apply { isAccessible = true }.invoke(activity)
+                MainActivity::class.java.getDeclaredMethod("refreshBrowsers", Boolean::class.javaPrimitiveType).apply { isAccessible = true }.invoke(activity, true)
             }
             var checkbox: CheckBox? = null
             repeat(50) {
@@ -277,8 +577,8 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             checks.add("Import UI: ZIP checkbox selects and deselects without opening preview or moving the list")
             onUi {
                 MainActivity::class.java.getDeclaredMethod("clearBrowserSelection", Boolean::class.javaPrimitiveType).apply { isAccessible = true }.invoke(activity, false)
-                val chooser = MainActivity::class.java.getDeclaredMethod("openFavorites").apply { isAccessible = true }.invoke(activity) as Dialog
-                val rootView = chooser.window!!.decorView
+                val chooser = MainActivity::class.java.getDeclaredMethod("openFavorites").apply { isAccessible = true }.invoke(activity) as FavoritesSheet
+                val rootView = chooser.contentView
                 descendants(rootView).filterIsInstance<Button>().first { it.text == "最近" }.performClick()
                 check(descendants(rootView).filterIsInstance<TextView>().any { it.text == fixture.absolutePath })
                 chooser.dismiss()

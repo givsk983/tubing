@@ -26,7 +26,18 @@ private data class QuickShortcut(val name: String, val kind: String, val fileNam
 
 class MainActivity : Activity() {
     private val io = Executors.newSingleThreadExecutor()
+    private val browserIo = Executors.newFixedThreadPool(2)
+    private val directoryCache = BrowserDirectoryCache()
+    private val browserRequests = BrowserRequestTokens()
+    private val browserReadTasks = arrayOfNulls<java.util.concurrent.Future<*>>(2)
+    private val browserLoading = booleanArrayOf(false, false)
+    private val loadedBrowserPaths = arrayOfNulls<String>(2)
+    private var browserPanes: LinearLayout? = null
+    private val updateIo = Executors.newSingleThreadExecutor()
+    private var checkingUpdate = false
+    private var checkUpdateButton: Button? = null
     private val root = RootExecutor()
+    private var browserDirectoryReader: (String) -> Pair<CommandResult, List<BrowserEntry>> = { root.browse(it) }
     private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
     private lateinit var page: LinearLayout
     private lateinit var content: FrameLayout
@@ -70,21 +81,28 @@ class MainActivity : Activity() {
     private var rightPath = "/storage/emulated/0"
     private var lastRecordedLeftPath: String? = null
     private var lastRecordedRightPath: String? = null
-    private val leftBrowserHistory = mutableListOf<String>()
-    private val rightBrowserHistory = mutableListOf<String>()
     private var lastBackPressedAt = 0L
     private var leftEntries: List<BrowserEntry> = emptyList()
     private var rightEntries: List<BrowserEntry> = emptyList()
+    private var leftBrowserQuery = ""
+    private var rightBrowserQuery = ""
     private val leftSelection = BrowserSelection()
     private val rightSelection = BrowserSelection()
     private val leftBrowserRows = mutableMapOf<String, View>()
     private val rightBrowserRows = mutableMapOf<String, View>()
+    private val displayedBrowserPaths = mutableMapOf<Boolean, String>()
+    private val browserTransitionDirections = mutableMapOf<Boolean, Int>()
+    private val browserScrollPositions = object : LinkedHashMap<String, Int>(80, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?) = size > 80
+    }
     private var browserSelectionBar: LinearLayout? = null
     private var browserNavigationBar: LinearLayout? = null
     private var browserImportMode = false
     private var browserSelectionCount: TextView? = null
     private var activeBrowserLeft = true
     private var browserTargetLabel: TextView? = null
+    private var browserBottomBar: View? = null
+    private var favoritesSheet: FavoritesSheet? = null
     private var leftBrowserCaption: TextView? = null
     private var rightBrowserCaption: TextView? = null
     private val accent = Color.rgb(40, 185, 207)
@@ -129,7 +147,18 @@ class MainActivity : Activity() {
         setOnClickListener { action() }
     }
     private fun base(): LinearLayout {
-        val result = column().apply { setPadding(dp(16), 0, dp(16), 0); setBackgroundColor(this@MainActivity.background) }
+        val result = FavoritesSwipeLayout(this, { event ->
+            val bar = browserBottomBar
+            if (!granted || tab != 1 || bar == null || !bar.isShown) false else {
+                val barPosition = IntArray(2).also { bar.getLocationOnScreen(it) }
+                val pagePosition = IntArray(2).also { page.getLocationOnScreen(it) }
+                val y = event.y + pagePosition[1]
+                y >= barPosition[1] && y <= pagePosition[1] + page.height - page.paddingBottom
+            }
+        }, { openFavorites(true) }).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), 0, dp(16), 0); setBackgroundColor(this@MainActivity.background)
+        }
         setContentView(result)
         result.setOnApplyWindowInsetsListener { view, insets ->
             if (Build.VERSION.SDK_INT >= 30) {
@@ -249,7 +278,7 @@ class MainActivity : Activity() {
                 inputMemoryButton = null
                 quickExecutionPage()
             }
-            1 -> { fileManagerPage(); refreshBrowsers() }
+            1 -> { fileManagerPage(); refreshBrowsers(invalidateCache = false) }
             else -> settingsPage()
         }
     }
@@ -345,7 +374,12 @@ class MainActivity : Activity() {
         val title = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         title.addView(text(if (browserImportMode) "导入文件" else "文件管理", 21f), LinearLayout.LayoutParams(0, dp(48), 1f))
         if (browserImportMode) title.addView(button("取消导入") { closeImportBrowser() })
-        title.addView(button("刷新") { refreshBrowsers() })
+        title.addView(button("☰") { }.apply {
+            textSize = 24f
+            contentDescription = "文件管理更多操作"
+            minWidth = 0
+            setOnClickListener { showBrowserMenu(this) }
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
         area.addView(title)
         if (!prefs.getBoolean("unifiedFileLibraryHintDismissed", false)) {
             val hint = LinearLayout(this).apply {
@@ -365,6 +399,7 @@ class MainActivity : Activity() {
             area.addView(hint, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         }
         val panes = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        browserPanes = panes
         leftBrowserCaption = null
         rightBrowserCaption = null
         browserTargetLabel = null
@@ -379,38 +414,7 @@ class MainActivity : Activity() {
         browserNavigationBar = column().apply {
             addView(browserTargetLabel, LinearLayout.LayoutParams(-1, dp(34)))
         }
-        val navigation = object : LinearLayout(this) {
-            private var gestureStartY = 0f
-            private var gestureStartX = 0f
-            private var openingFavorites = false
-
-            init { gravity = Gravity.CENTER }
-
-            override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> { gestureStartY = event.y; gestureStartX = event.x; openingFavorites = false }
-                    MotionEvent.ACTION_MOVE -> {
-                        val deltaY = event.y - gestureStartY
-                        if (!openingFavorites && -deltaY > dp(28) && kotlin.math.abs(deltaY) > kotlin.math.abs(event.x - gestureStartX)) {
-                            openingFavorites = true
-                            return true
-                        }
-                    }
-                }
-                return super.onInterceptTouchEvent(event)
-            }
-
-            override fun onTouchEvent(event: MotionEvent): Boolean {
-                if (openingFavorites) {
-                    if (event.actionMasked == MotionEvent.ACTION_UP) {
-                        openingFavorites = false
-                        openFavorites()
-                    } else if (event.actionMasked == MotionEvent.ACTION_CANCEL) openingFavorites = false
-                    return true
-                }
-                return super.onTouchEvent(event)
-            }
-        }
+        val navigation = LinearLayout(this).apply { gravity = Gravity.CENTER }
         navigation.addView(button("↑ 上级") { goParent(activeBrowserLeft) }, LinearLayout.LayoutParams(0, dp(46), 1f))
         navigation.addView(button("⌂ 主页") { navigateBrowser(activeBrowserLeft, if (activeBrowserLeft) root.managedRoot else "/storage/emulated/0") }, LinearLayout.LayoutParams(0, dp(46), 1f))
         navigation.addView(button(if (browserImportMode) "更多导入" else "＋ 新建") {
@@ -437,12 +441,16 @@ class MainActivity : Activity() {
             addView(browserNavigationBar, FrameLayout.LayoutParams(-1, -2))
             addView(browserSelectionBar, FrameLayout.LayoutParams(-1, -2))
         }
+        browserBottomBar = bottomBar
         area.addView(bottomBar, LinearLayout.LayoutParams(-1, -2))
         content.addView(area, FrameLayout.LayoutParams(-1, -1))
         updateBrowserSelection()
     }
 
     private fun browserPane(left: Boolean): LinearLayout {
+        val fontSize = browserFontSize().toFloat()
+        displayedBrowserPaths[left] = if (left) leftPath else rightPath
+        val transition = browserTransitionDirections.remove(left) ?: 0
         val pane = column().apply {
             setPadding(dp(3), 0, dp(3), 0)
             isClickable = true
@@ -457,6 +465,15 @@ class MainActivity : Activity() {
             setOnClickListener { focusBrowser(left); editBrowserPath(left) }
         }
         pane.addView(pathLabel, LinearLayout.LayoutParams(-1, dp(42)))
+        val query = if (left) leftBrowserQuery else rightBrowserQuery
+        if (query.isNotEmpty()) pane.addView(button("搜索：$query · 清除") {
+            focusBrowser(left)
+            if (left) leftBrowserQuery = "" else rightBrowserQuery = ""
+            replaceBrowserPane(left)
+        }.apply {
+            textSize = 11f
+            contentDescription = "清除当前栏搜索：$query"
+        }, LinearLayout.LayoutParams(-1, -2))
         val list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isClickable = true
@@ -466,12 +483,13 @@ class MainActivity : Activity() {
         }
         val filtered = visibleBrowserEntries(left)
         val selection = browserSelection(left)
-        selection.retain(selectableBrowserEntries(left).map { it.path })
+        selection.retain(filtered.filter { !browserImportMode || it.type == "f" }.map { it.path })
         val canGoParent = (if (left) leftPath else rightPath).trimEnd('/').isNotEmpty()
         list.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(3), dp(3), dp(5), dp(3))
-            addView(text("📁  ..", 12f, this@MainActivity.foreground).apply {
+            background = browserRowBackground()
+            addView(text("📁  ..", fontSize, this@MainActivity.foreground).apply {
                 maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
                 setPadding(0, dp(3), 0, dp(1))
             }, LinearLayout.LayoutParams(0, -2, 1f))
@@ -483,13 +501,25 @@ class MainActivity : Activity() {
         list.addView(View(this).apply {
             setBackgroundColor(if (dark) Color.rgb(34, 47, 62) else Color.rgb(226, 233, 238))
         }, LinearLayout.LayoutParams(-1, dp(1)))
-        if (filtered.isEmpty()) list.addView(text("目录为空", 12f, foreground))
+        if (filtered.isEmpty()) {
+            if (browserLoading[if (left) 0 else 1]) {
+                list.addView(LinearLayout(this).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(4), dp(12), dp(4), dp(12))
+                    addView(ProgressBar(this@MainActivity, null, android.R.attr.progressBarStyleSmall).apply {
+                        indeterminateTintList = android.content.res.ColorStateList.valueOf(accent)
+                    }, LinearLayout.LayoutParams(dp(20), dp(20)))
+                    addView(text("正在读取目录…", 12f, mutedColor()))
+                })
+            } else list.addView(text(if (query.isEmpty()) "目录为空" else "没有匹配的文件或文件夹", fontSize, foreground))
+        }
         filtered.forEach { entry ->
             val isSelected = entry.path in selection.selectedPaths
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(3), dp(3), dp(5), dp(3))
-                setBackgroundColor(if (isSelected) (if (dark) Color.rgb(25, 64, 80) else Color.rgb(210, 239, 243)) else Color.TRANSPARENT)
+                background = browserRowBackground()
+                this.isSelected = isSelected
             }
             (if (left) leftBrowserRows else rightBrowserRows)[entry.path] = row
             val icon = when { entry.type == "d" -> "📁"; entry.type == "l" -> "↪";
@@ -506,14 +536,14 @@ class MainActivity : Activity() {
                     updateBrowserSelection()
                 }
             }, LinearLayout.LayoutParams(dp(40), dp(48)))
-            row.addView(text("$icon  ${entry.name}", 12f, foreground).apply {
+            row.addView(text("$icon  ${entry.name}", fontSize, foreground).apply {
                 maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; setPadding(0, dp(3), 0, dp(1))
             }, LinearLayout.LayoutParams(0, -2, 1f))
             installBrowserSwipe(row, left, entry)
             row.setOnClickListener {
                 activeBrowserLeft = left
                 if (browserImportMode && entry.type == "d") {
-                    navigateBrowser(left, entry.path, rememberCurrent = true)
+                    navigateBrowser(left, entry.path)
                 } else if (browserImportMode && entry.type == "l") {
                     Toast.makeText(this, "请选择普通文件，不能导入符号链接", Toast.LENGTH_SHORT).show()
                 } else if (browserImportMode && entry.name.endsWith(".zip", true)) {
@@ -521,7 +551,7 @@ class MainActivity : Activity() {
                 } else if (browserImportMode || selection.inSelectionMode) {
                     selection.add(entry.path)
                     updateBrowserSelection()
-                } else if (entry.type == "d") navigateBrowser(left, entry.path, rememberCurrent = true)
+                } else if (entry.type == "d") navigateBrowser(left, entry.path)
                 else if (entry.type == "f" && entry.name.endsWith(".zip", true)) openZipBrowser(left, entry)
                 else {
                     selection.selectOnly(entry.path)
@@ -545,17 +575,49 @@ class MainActivity : Activity() {
             list.addView(row)
             list.addView(View(this).apply { setBackgroundColor(if (dark) Color.rgb(34, 47, 62) else Color.rgb(226, 233, 238)) }, LinearLayout.LayoutParams(-1, dp(1)))
         }
-        val scroll = ScrollView(this).apply { isFillViewport = true; addView(list) }
-        scroll.setOnTouchListener { _, event ->
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) focusBrowser(left)
-            false
+        val scrollKey = "${if (left) "left" else "right"}\u0000${if (left) leftPath else rightPath}\u0000$query\u0000${prefs.getString(if (left) "leftBrowserSort" else "rightBrowserSort", "nameAsc")}"
+        val savedOffset = browserScrollPositions[scrollKey] ?: 0
+        val scroll = BrowserScrollView(this, accent) { focusBrowser(left) }.apply { addView(list) }
+        val motionStyle = browserTransitionStyle()
+        val animateDirectory = transition != 0 && android.animation.ValueAnimator.areAnimatorsEnabled()
+        if (animateDirectory) {
+            list.alpha = motionStyle.startAlpha
+            list.translationX = (transition * dp(motionStyle.distanceDp)).toFloat()
+        }
+        // Restore before the first draw, and only record offsets after the first layout.
+        var restored = false
+        scroll.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                scroll.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                scroll.scrollTo(0, savedOffset)
+                restored = true
+                browserScrollPositions[scrollKey] = scroll.scrollY
+                if (animateDirectory) list.animate()
+                    .alpha(1f).translationX(0f).setDuration(motionStyle.durationMs)
+                    .setInterpolator(android.view.animation.DecelerateInterpolator(motionStyle.deceleration)).start()
+            }
+        })
+        scroll.setOnScrollChangeListener { _, _, y, _, _ ->
+            if (restored) browserScrollPositions[scrollKey] = y
         }
         pane.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         return pane
     }
 
+    private fun browserRowBackground(): android.graphics.drawable.Drawable {
+        val states = android.graphics.drawable.StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_selected), android.graphics.drawable.ColorDrawable(
+                if (dark) Color.rgb(25, 64, 80) else Color.rgb(210, 239, 243)))
+            addState(intArrayOf(), android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        }
+        return android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(Color.argb(36, 40, 185, 207)), states,
+            android.graphics.drawable.ColorDrawable(Color.WHITE))
+    }
+
     private fun focusBrowser(left: Boolean) {
         lastBackPressedAt = 0L
+        if (activeBrowserLeft == left) return
         activeBrowserLeft = left
         browserTargetLabel?.text = "操作目标：${if (left) "左侧 · 脚本库" else "右侧 · 设备目录"}"
         leftBrowserCaption?.setTextColor(if (left) accent else foreground)
@@ -567,7 +629,64 @@ class MainActivity : Activity() {
 
     private fun visibleBrowserEntries(left: Boolean): List<BrowserEntry> {
         val entries = if (left) leftEntries else rightEntries
-        return entries
+        return BrowserDisplay.entries(entries, if (left) leftBrowserQuery else rightBrowserQuery,
+            BrowserSort.fromKey(prefs.getString(if (left) "leftBrowserSort" else "rightBrowserSort", null)))
+    }
+
+    private fun showBrowserMenu(anchor: View) {
+        val left = activeBrowserLeft
+        val menu = column().apply {
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = GradientDrawable().apply {
+                setColor(panel); cornerRadius = dp(12).toFloat()
+                setStroke(dp(1), if (dark) Color.rgb(61, 83, 105) else Color.rgb(171, 192, 207))
+            }
+        }
+        val popup = PopupWindow(menu, dp(200), -2, true).apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            elevation = dp(12).toFloat()
+            isOutsideTouchable = true
+        }
+        menu.addView(text(if (left) "左侧 · 脚本库" else "右侧 · 设备目录", 12f, mutedColor()))
+        listOf<Pair<String, () -> Unit>>(
+            "刷新" to { refreshBrowsers() },
+            "搜索" to { searchBrowser(left) },
+            "排列方式" to { chooseBrowserSort(left) }
+        ).forEach { (label, action) ->
+            menu.addView(button(label) { popup.dismiss(); action() }, LinearLayout.LayoutParams(-1, dp(48)))
+        }
+        popup.showAsDropDown(anchor, 0, 0, Gravity.END)
+    }
+
+    private fun searchBrowser(left: Boolean) {
+        val input = formInput("输入文件或文件夹名称", if (left) leftBrowserQuery else rightBrowserQuery)
+        styledDialog("搜索", "仅搜索${if (left) "左" else "右"}栏当前目录，不搜索子目录", { input }, { dialog -> listOf(
+            "取消" to { dialog.dismiss() },
+            "搜索" to {
+                focusBrowser(left)
+                clearBrowserSelection(left)
+                if (left) leftBrowserQuery = input.text.toString().trim() else rightBrowserQuery = input.text.toString().trim()
+                dialog.dismiss()
+                replaceBrowserPane(left)
+            }
+        ) })
+    }
+
+    private fun chooseBrowserSort(left: Boolean) {
+        val key = if (left) "leftBrowserSort" else "rightBrowserSort"
+        val current = BrowserSort.fromKey(prefs.getString(key, null))
+        styledDialog("排列方式", "${if (left) "左" else "右"}栏 · 文件夹始终优先，重启后保留", { dialog ->
+            column().apply {
+                BrowserSort.entries.forEach { sort ->
+                    addView(optionCard(sort.label, "", sort == current) {
+                        focusBrowser(left)
+                        prefs.edit().putString(key, sort.key).apply()
+                        dialog.dismiss()
+                        replaceBrowserPane(left)
+                    })
+                }
+            }
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
     }
 
     private fun selectableBrowserEntries(left: Boolean) = visibleBrowserEntries(left).filter {
@@ -585,9 +704,10 @@ class MainActivity : Activity() {
             val selectedPaths = selection.selectedPaths
             (if (left) leftBrowserRows else rightBrowserRows).forEach { (path, row) ->
                 val checked = path in selectedPaths
-                row.isSelected = checked
-                row.findViewWithTag<CheckBox>("importSelectable")?.isChecked = checked
-                row.setBackgroundColor(if (checked) (if (dark) Color.rgb(25, 64, 80) else Color.rgb(210, 239, 243)) else Color.TRANSPARENT)
+                if (row.isSelected != checked) row.isSelected = checked
+                row.findViewWithTag<CheckBox>("importSelectable")?.let { box ->
+                    if (box.isChecked != checked) box.isChecked = checked
+                }
             }
         }
         val selection = browserSelection(activeBrowserLeft)
@@ -651,58 +771,95 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun refreshBrowsers() {
+    private fun replaceBrowserPane(left: Boolean) {
+        val panes = browserPanes ?: return
+        if (tab != 1 || !panes.isAttachedToWindow) return
+        val index = if (left) 0 else 2
+        (if (left) leftBrowserRows else rightBrowserRows).clear()
+        panes.removeViewAt(index)
+        panes.addView(browserPane(left), index, LinearLayout.LayoutParams(0, -1, 1f))
+        updateBrowserSelection()
+    }
+
+    private fun directoryDirection(from: String?, to: String): Int {
+        val old = from?.trimEnd('/')?.ifEmpty { "/" }
+        val next = to.trimEnd('/').ifEmpty { "/" }
+        return when {
+            old == null || old == next -> 0
+            next == "/" || old.startsWith("$next/") -> -1
+            else -> 1
+        }
+    }
+
+    private fun refreshBrowsers(invalidateCache: Boolean = true) {
         if (!granted || tab != 1) return
-        val left = leftPath; val right = rightPath
-        io.execute {
-            val leftResult = try { root.browse(left) } catch (e: Exception) { CommandResult(-1, e.message ?: "读取失败") to emptyList() }
-            val rightResult = try { root.browse(right) } catch (e: Exception) { CommandResult(-1, e.message ?: "读取失败") to emptyList() }
+        if (invalidateCache) directoryCache.clear()
+        readBrowserDirectory(!activeBrowserLeft)
+        readBrowserDirectory(activeBrowserLeft)
+    }
+
+    private fun readBrowserDirectory(left: Boolean, from: String? = null) {
+        val index = if (left) 0 else 1
+        val path = if (left) leftPath else rightPath
+        val currentEntries = if (left) leftEntries else rightEntries
+        val snapshot = directoryCache[path] ?: currentEntries.takeIf { loadedBrowserPaths[index] == path && !browserLoading[index] }
+        val direction = directoryDirection(from, path)
+        val token = browserRequests.begin(left)
+        browserReadTasks[index]?.cancel(false)
+        browserLoading[index] = snapshot == null
+        loadedBrowserPaths[index] = if (snapshot != null) path else null
+        if (left) leftEntries = snapshot ?: emptyList() else rightEntries = snapshot ?: emptyList()
+        browserTransitionDirections[left] = if (snapshot != null) direction else 0
+        // Show the new path immediately; cached entries can be used without waiting for su.
+        if (from != null || displayedBrowserPaths[left] != path || snapshot == null || snapshot != currentEntries) replaceBrowserPane(left)
+        browserReadTasks[index] = browserIo.submit {
+            if (!browserRequests.isCurrent(left, token)) return@submit
+            val (result, entries) = try { browserDirectoryReader(path) }
+                catch (error: Exception) { CommandResult(-1, error.message ?: "读取失败") to emptyList() }
             runOnUiThread {
-                if (isDestroyed || tab != 1 || left != leftPath || right != rightPath) return@runOnUiThread
-                leftEntries = leftResult.second; rightEntries = rightResult.second
-                // Record only successful directory visits; ordinary refreshes keep the same order.
-                listOf(!activeBrowserLeft, activeBrowserLeft).forEach { paneLeft ->
-                    val path = if (paneLeft) left else right
-                    val result = if (paneLeft) leftResult.first else rightResult.first
-                    val lastPath = if (paneLeft) lastRecordedLeftPath else lastRecordedRightPath
-                    if (result.code == 0 && path != lastPath) {
-                        rememberBrowserDirectory(path)
-                        if (paneLeft) lastRecordedLeftPath = path else lastRecordedRightPath = path
-                    }
+                if (isDestroyed || !browserRequests.isCurrent(left, token) || path != (if (left) leftPath else rightPath)) return@runOnUiThread
+                val wasLoading = browserLoading[index]
+                val previous = if (left) leftEntries else rightEntries
+                browserLoading[index] = false
+                if (result.code == 0) {
+                    directoryCache.put(path, entries)
+                    loadedBrowserPaths[index] = path
+                    if (left) leftEntries = entries else rightEntries = entries
+                    val last = if (left) lastRecordedLeftPath else lastRecordedRightPath
+                    if (path != last) rememberBrowserDirectory(path)
+                    if (left) lastRecordedLeftPath = path else lastRecordedRightPath = path
+                } else {
+                    directoryCache.remove(path)
+                    loadedBrowserPaths[index] = null
+                    if (left) leftEntries = emptyList() else rightEntries = emptyList()
                 }
-                if (leftResult.first.code != 0) message("左侧目录无法读取", leftResult.first.output.ifBlank { "请检查目录路径和访问权限" })
-                if (rightResult.first.code != 0) message("右侧目录无法读取", rightResult.first.output.ifBlank { "请检查目录路径和访问权限" })
-                fileManagerPage()
+                if (tab != 1) return@runOnUiThread
+                if (wasLoading || previous != entries || result.code != 0) {
+                    browserTransitionDirections[left] = if (wasLoading && result.code == 0) direction else 0
+                    replaceBrowserPane(left)
+                }
+                if (result.code != 0) message("${if (left) "左" else "右"}侧目录无法读取", result.output.ifBlank { "请检查目录路径和访问权限" })
             }
         }
     }
 
-    private fun navigateBrowser(left: Boolean, path: String, rememberCurrent: Boolean = false) {
+    private fun navigateBrowser(left: Boolean, path: String) {
         lastBackPressedAt = 0L
-        val history = if (left) leftBrowserHistory else rightBrowserHistory
-        if (rememberCurrent) history.add(if (left) leftPath else rightPath) else history.clear()
+        val previous = if (left) leftPath else rightPath
+        if (previous == path && (if (left) leftBrowserQuery else rightBrowserQuery).isEmpty()) return
+        if (left) leftBrowserQuery = "" else rightBrowserQuery = ""
         clearBrowserSelection(left)
         if (left) lastRecordedLeftPath = null else lastRecordedRightPath = null
         if (left) leftPath = path else rightPath = path
-        refreshBrowsers()
+        readBrowserDirectory(left, previous)
     }
 
-    private fun backBrowserDirectory(): Boolean {
-        val history = if (activeBrowserLeft) leftBrowserHistory else rightBrowserHistory
-        if (history.isEmpty()) return false
-        lastBackPressedAt = 0L
-        val previous = history.removeAt(history.lastIndex)
-        clearBrowserSelection(activeBrowserLeft)
-        if (activeBrowserLeft) lastRecordedLeftPath = null else lastRecordedRightPath = null
-        if (activeBrowserLeft) leftPath = previous else rightPath = previous
-        refreshBrowsers()
-        return true
-    }
-
-    private fun goParent(left: Boolean) {
+    private fun goParent(left: Boolean): Boolean {
         val path = if (left) leftPath else rightPath
+        if (path.trimEnd('/').isEmpty()) return false
         val parent = path.trimEnd('/').substringBeforeLast('/', "").ifEmpty { "/" }
         navigateBrowser(left, parent)
+        return true
     }
 
     private fun editBrowserPath(left: Boolean) {
@@ -1127,7 +1284,7 @@ class MainActivity : Activity() {
                                     leftSelection.clear(); rightSelection.clear()
                                     leftPath = "${root.managedRoot}/$name"
                                     lastRecordedLeftPath = null
-                                    leftEntries = emptyList(); leftBrowserHistory.clear()
+                                    leftEntries = emptyList()
                                     activeBrowserLeft = true; tab = 1; showTab()
                                     message("项目导入完成", details)
                                     discardZipSnapshot(archive)
@@ -1193,7 +1350,6 @@ class MainActivity : Activity() {
         rightPath = "/storage/emulated/0/Download"
         lastRecordedRightPath = null
         rightEntries = emptyList()
-        rightBrowserHistory.clear()
         tab = 1
         showTab()
     }
@@ -1353,11 +1509,14 @@ class MainActivity : Activity() {
         prefs.edit().putString("recentBrowserDirectories", array.toString()).apply()
     }
 
-    private fun openFavorites(): android.app.Dialog {
+    private fun openFavorites(): FavoritesSheet = openFavorites(false)
+
+    private fun openFavorites(dragging: Boolean): FavoritesSheet {
+        favoritesSheet?.takeIf { it.isShowing }?.let { return it }
         val targetLeft = activeBrowserLeft
         var recent = false
         val listing = column()
-        lateinit var dialog: android.app.Dialog
+        lateinit var dialog: FavoritesSheet
         fun render() {
             listing.removeAllViews()
             val tabs = LinearLayout(this)
@@ -1379,7 +1538,7 @@ class MainActivity : Activity() {
                         else -> path.substringAfterLast('/')
                     }
                     listing.addView(optionCard(name, path) {
-                        dialog.dismiss(); navigateBrowser(targetLeft, path, rememberCurrent = true)
+                        dialog.dismiss(); navigateBrowser(targetLeft, path)
                     })
                 }
                 if (paths.isNotEmpty()) listing.addView(button("清空最近") {
@@ -1400,8 +1559,25 @@ class MainActivity : Activity() {
             }
         }
         render()
-        dialog = styledDialog("收藏夹与最近", "点击路径，在${if (targetLeft) "左" else "右"}侧文件栏打开", { listing },
-            { chooser -> listOf("关闭" to { chooser.dismiss() }) })
+        val body = dialogPanel(0.60f, 520)
+        val heading = text("收藏夹与最近", 22f).apply {
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(4), 0, dp(4), dp(4))
+            contentDescription = "收藏夹与最近，向下拖动关闭"
+            if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+        }
+        body.addView(heading)
+        body.addView(text("点击路径，在${if (targetLeft) "左" else "右"}侧文件栏打开", 13f, mutedColor()).apply {
+            setPadding(dp(4), dp(4), dp(4), dp(16))
+        })
+        body.addView(ScrollView(this).apply { addView(listing) }, LinearLayout.LayoutParams(-1, -2, 1f))
+        body.addView(button("关闭") { dialog.dismiss() }, LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(10) })
+        dialog = FavoritesSheet(findViewById(android.R.id.content), body) {
+            if (favoritesSheet === dialog) favoritesSheet = null
+        }
+        favoritesSheet = dialog
+        dialog.attachDragHandle(heading)
+        dialog.show(dragging)
         return dialog
     }
 
@@ -1753,17 +1929,10 @@ class MainActivity : Activity() {
         dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels - dp(32), dp(480)), -2)
     }
 
-    private fun styledDialog(
-        title: String,
-        subtitle: String,
-        content: (android.app.Dialog) -> View,
-        actions: (android.app.Dialog) -> List<Pair<String, () -> Unit>>
-    ): android.app.Dialog {
-        val dialog = android.app.Dialog(this)
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        val body = object : LinearLayout(this) {
+    private fun dialogPanel(heightFraction: Float = 0.88f, maximumHeightDp: Int = Int.MAX_VALUE): LinearLayout = object : LinearLayout(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                val screenLimit = (resources.displayMetrics.heightPixels * 0.88f).toInt()
+                val screenLimit = minOf((resources.displayMetrics.heightPixels * heightFraction).toInt(),
+                    if (maximumHeightDp == Int.MAX_VALUE) Int.MAX_VALUE else dp(maximumHeightDp))
                 val limit = if (View.MeasureSpec.getMode(heightMeasureSpec) == View.MeasureSpec.UNSPECIFIED) screenLimit
                     else minOf(screenLimit, View.MeasureSpec.getSize(heightMeasureSpec))
                 super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST))
@@ -1776,6 +1945,16 @@ class MainActivity : Activity() {
                 setStroke(dp(1), Color.parseColor(if (dark) "#3d5369" else "#abc0cf"))
             }
         }
+
+    private fun styledDialog(
+        title: String,
+        subtitle: String,
+        content: (android.app.Dialog) -> View,
+        actions: (android.app.Dialog) -> List<Pair<String, () -> Unit>>
+    ): android.app.Dialog {
+        val dialog = android.app.Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        val body = dialogPanel()
         body.addView(text(title, 22f).apply {
             typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(4), 0, dp(4), dp(4))
@@ -2429,11 +2608,90 @@ class MainActivity : Activity() {
             }
         }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
     }
+    private fun browserFontSize() = prefs.getInt("browserFontSize", 16).coerceIn(10, 20)
+
+    private fun browserTransitionStyle() = BrowserTransitionStyle.fromKey(prefs.getString("browserTransitionStyle", null))
+
+    private fun chooseBrowserTransitionStyle() {
+        val current = browserTransitionStyle()
+        styledDialog("目录过渡动画", "仅用于目录切换，选择后自动保存", { dialog ->
+            column().apply {
+                BrowserTransitionStyle.entries.forEach { style ->
+                    addView(optionCard(if (style == BrowserTransitionStyle.FRESH) "${style.label} · 默认" else style.label,
+                        style.description, style == current) {
+                        prefs.edit().putString("browserTransitionStyle", style.key).apply()
+                        dialog.dismiss()
+                        showTab()
+                    })
+                }
+                addView(text("关闭系统动画后，目录切换将直接完成。", 12f, mutedColor()))
+            }
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
+    }
+
+    private fun chooseBrowserFontSize() {
+        val current = browserFontSize()
+        styledDialog("文件管理字体大小", "调整左右两栏的文件、文件夹名称 · 下方为字号预览", { dialog ->
+            column().apply {
+                listOf(10, 12, 14, 16, 18, 20).forEach { size ->
+                    addView(optionCard(if (size == 16) "$size · 默认" else "$size", "", size == current) {
+                        prefs.edit().putInt("browserFontSize", size).apply()
+                        // Pixel offsets no longer describe the same rows after a font change.
+                        browserScrollPositions.clear()
+                        dialog.dismiss()
+                        showTab()
+                    }.apply {
+                        addView(text("📁  示例文件夹\n📄  示例脚本.sh", size.toFloat()).apply {
+                            setPadding(0, dp(8), 0, 0)
+                            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                        })
+                    })
+                }
+            }
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
+    }
+
+    private fun settingsHeading(title: String) = text(title, 13f,
+        if (dark) accent else Color.rgb(18, 112, 128)).apply {
+        setPadding(dp(8), dp(8), dp(8), dp(10))
+        typeface = Typeface.DEFAULT_BOLD
+        if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+    }
+
+    private fun settingsGroup() = column().apply {
+        tag = "settingsGroup"
+        setPadding(dp(1), dp(6), dp(1), dp(6))
+        background = GradientDrawable().apply {
+            setColor(if (dark) panel else Color.rgb(223, 232, 239))
+            cornerRadius = dp(16).toFloat()
+        }
+        clipToOutline = true
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) }
+    }
+
+    private fun settingsRow(label: String, action: () -> Unit) = button(label, action).apply {
+        setTextColor(android.content.res.ColorStateList(
+            arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+            intArrayOf(mutedColor(), this@MainActivity.foreground)))
+        textSize = 14f
+        gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        setPadding(dp(16), dp(12), dp(16), dp(12))
+        minHeight = dp(52)
+        background = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(Color.argb(36, 40, 185, 207)), null,
+            android.graphics.drawable.ColorDrawable(Color.WHITE))
+        layoutParams = LinearLayout.LayoutParams(-1, -2)
+    }
+
     private fun settingsPage() {
-        val area = column(); area.addView(text("设置", 25f)); area.addView(text("显示与终端", 13f, accent))
-        area.addView(button("默认导入方式 · ${ImportSource.fromKey(prefs.getString("importSource", "ask")).label}") { chooseDefaultImportSource() })
+        val area = column()
+        area.addView(text("设置", 25f).apply { setPadding(dp(4), dp(8), dp(4), dp(16)) })
+        area.addView(settingsHeading("显示与终端"))
+        val displayGroup = settingsGroup()
+        area.addView(displayGroup)
+        displayGroup.addView(settingsRow("默认导入方式 · ${ImportSource.fromKey(prefs.getString("importSource", "ask")).label}") { chooseDefaultImportSource() })
         val quickHome = prefs.getBoolean("homeDefaultQuickInterface", prefs.getBoolean("quickInterface", false))
-        area.addView(button("首页默认 · ${if (quickHome) "快捷版" else "完整版"}") {
+        displayGroup.addView(settingsRow("首页默认 · ${if (quickHome) "快捷版" else "完整版"}") {
             styledDialog("首页默认界面", "启动应用时优先打开的界面", { dialog ->
                 column().apply {
                     listOf("完整版" to "文件管理、输入方案与完整终端", "快捷版" to "选择快捷方式，快速启动执行").forEachIndexed { index, (label, detail) ->
@@ -2448,7 +2706,7 @@ class MainActivity : Activity() {
             }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
         val rememberByDefault = prefs.getBoolean("defaultRememberInput", false)
-        area.addView(button("默认记忆输入 · ${if (rememberByDefault) "开" else "关"}") {
+        displayGroup.addView(settingsRow("默认记忆输入 · ${if (rememberByDefault) "开" else "关"}") {
             styledDialog("默认记忆输入", "此默认值用于没有单独设置过记忆输入的脚本。已有单独设置的脚本保持原样。", { dialog ->
                 column().apply {
                     listOf(false, true).forEach { enabled ->
@@ -2462,9 +2720,9 @@ class MainActivity : Activity() {
                 }
             }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
-        modeSelector = button(modeText()) { chooseMode() }
-        area.addView(modeSelector)
-        area.addView(button("主题 · " + when (prefs.getString("theme", "system")) { "dark" -> "深色"; "light" -> "浅色"; else -> "跟随系统" }) {
+        modeSelector = settingsRow(modeText()) { chooseMode() }
+        displayGroup.addView(modeSelector)
+        displayGroup.addView(settingsRow("主题 · " + when (prefs.getString("theme", "system")) { "dark" -> "深色"; "light" -> "浅色"; else -> "跟随系统" }) {
             val themes = listOf(Triple("system", "跟随系统", "自动使用设备的外观设置"),
                 Triple("dark", "深色", "深蓝灰背景，适合暗光环境"), Triple("light", "浅色", "明亮背景，适合日间阅读"))
             styledDialog("主题", "选择应用的显示外观", { dialog ->
@@ -2477,7 +2735,7 @@ class MainActivity : Activity() {
                 }
             }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
-        area.addView(button("终端字体 · ${prefs.getInt("fontSize", 14)}") {
+        displayGroup.addView(settingsRow("终端字体 · ${prefs.getInt("fontSize", 14)}") {
             val sizes = arrayOf(12, 14, 16, 18, 20)
             styledDialog("终端字体大小", "选择字号 · 下方文字为大小预览", { dialog ->
                 column().apply {
@@ -2497,26 +2755,86 @@ class MainActivity : Activity() {
                 }
             }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
-        area.addView(Switch(this).apply {
+        displayGroup.addView(settingsRow("文件管理字体大小 · ${browserFontSize()}") { chooseBrowserFontSize() })
+        displayGroup.addView(settingsRow("目录过渡动画 · ${browserTransitionStyle().label}") { chooseBrowserTransitionStyle() })
+        displayGroup.addView(Switch(this).apply {
             text = "执行结束后自动保存日志"; setTextColor(this@MainActivity.foreground); isChecked = prefs.getBoolean("saveLogs", true)
-            setPadding(dp(10), dp(16), dp(10), dp(16)); setOnCheckedChangeListener { _, enabled -> prefs.edit().putBoolean("saveLogs", enabled).apply() }
+            setPadding(dp(16), dp(12), dp(16), dp(12)); minimumHeight = dp(52)
+            setOnCheckedChangeListener { _, enabled -> prefs.edit().putBoolean("saveLogs", enabled).apply() }
         })
-        area.addView(text("设备与记录", 13f, accent))
-        area.addView(button("执行历史保留 · ${ExecutionHistory.limit(this)} 次") { editExecutionHistoryLimit() })
-        area.addView(text("Root 状态 · 已授权"))
-        area.addView(button("重新检查 Root") { checkRoot() })
-        area.addView(button("查看执行日志") { work({ root.logs() }) { showExecutionLogs(it.output) } })
-        area.addView(button("清理临时文件") {
+        area.addView(settingsHeading("设备与记录"))
+        val deviceGroup = settingsGroup()
+        area.addView(deviceGroup)
+        deviceGroup.addView(settingsRow("执行历史保留 · ${ExecutionHistory.limit(this)} 次") { editExecutionHistoryLimit() })
+        deviceGroup.addView(text("Root 状态 · 已授权", 14f).apply { setPadding(dp(16), dp(12), dp(16), dp(12)) })
+        deviceGroup.addView(settingsRow("重新检查 Root") { checkRoot() })
+        deviceGroup.addView(settingsRow("查看执行日志") { work({ root.logs() }) { showExecutionLogs(it.output) } })
+        deviceGroup.addView(settingsRow("清理临时文件") {
             if (SessionState.running) message("暂时无法清理", "请在执行结束后清理临时文件。")
             else work({ root.cleanTmp() }) { message("清理临时文件", if (it.code == 0) "清理完成" else it.output) }
         })
-        area.addView(text("反馈与项目", 13f, accent))
-        area.addView(button("反馈频道 · Telegram") { openExternalLink("https://t.me/mbazhuan") })
-        area.addView(button("GitHub 仓库") { openExternalLink("https://github.com/givsk983/tubing") })
-        area.addView(button("旧 GitHub 仓库（账号申诉中）") { openExternalLink("https://github.com/yunhe4550-design/Tubing") })
-        area.addView(text("Tubing ${packageManager.getPackageInfo(packageName, 0).versionName}\nRoot 交互终端", 12f))
+        area.addView(settingsHeading("反馈与项目"))
+        val projectGroup = settingsGroup()
+        area.addView(projectGroup)
+        checkUpdateButton = settingsRow(if (checkingUpdate) "正在检查更新…" else "检查更新") { checkForUpdates() }.apply {
+            isEnabled = !checkingUpdate
+        }
+        projectGroup.addView(checkUpdateButton)
+        projectGroup.addView(settingsRow("反馈频道 · Telegram") { openExternalLink("https://t.me/mbazhuan") })
+        projectGroup.addView(settingsRow("GitHub 仓库") { openExternalLink("https://github.com/givsk983/tubing") })
+        projectGroup.addView(settingsRow("旧 GitHub 仓库（账号申诉中）") { openExternalLink("https://github.com/yunhe4550-design/Tubing") })
+        area.addView(text("Tubing ${packageManager.getPackageInfo(packageName, 0).versionName}\nRoot 交互终端", 12f, mutedColor()).apply { gravity = Gravity.CENTER })
         content.addView(ScrollView(this).apply { addView(area) }, FrameLayout.LayoutParams(-1, -1))
     }
+    private fun checkForUpdates() {
+        if (checkingUpdate) return
+        checkingUpdate = true
+        checkUpdateButton?.apply { text = "正在检查更新…"; isEnabled = false }
+        val installed = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.4.1"
+        updateIo.execute {
+            val result = runCatching { GitHubUpdateChecker.check() }
+            runOnUiThread {
+                checkingUpdate = false
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                checkUpdateButton?.apply { text = "检查更新"; isEnabled = true }
+                result.fold(onSuccess = { release ->
+                    if (release == null) {
+                        message("暂无可用版本", "GitHub 暂无可识别的已发布版本。当前版本：$installed")
+                    } else if (!AppUpdates.isNewer(release, installed)) {
+                        message("暂无新版本", "当前版本：$installed\nGitHub 最新版本：${release.tag}${if (release.prerelease) "（测试版）" else ""}")
+                    } else {
+                        styledDialog("发现新版本 ${release.tag}", "当前版本 $installed${if (release.prerelease) " · 测试版更新" else ""}", {
+                            column().apply {
+                                addView(text(release.title, 17f).apply { typeface = Typeface.DEFAULT_BOLD })
+                                addView(text(release.notes.ifBlank { "此版本暂未提供更新说明。" }, 14f, mutedColor()).apply {
+                                    setTextIsSelectable(true)
+                                })
+                                addView(button("查看 GitHub 发布页") { openExternalLink(release.pageUrl) }, LinearLayout.LayoutParams(-1, dp(50)))
+                            }
+                        }, { dialog -> listOf(
+                            "稍后" to { dialog.dismiss() },
+                            (if (release.apkUrl != null) "下载 APK" else "前往发布页") to {
+                                dialog.dismiss()
+                                openExternalLink(release.apkUrl ?: release.pageUrl)
+                            }
+                        ) })
+                    }
+                }, onFailure = { error ->
+                    val reason = when (error) {
+                        is java.net.SocketTimeoutException -> "连接 GitHub 超时，请检查网络后重试。"
+                        is java.io.IOException -> "无法连接 GitHub，请检查网络后重试。"
+                        is org.json.JSONException -> "GitHub 返回的数据无法读取，请稍后重试。"
+                        else -> error.message ?: "检查失败，请稍后重试。"
+                    }
+                    styledDialog("检查更新失败", "", { text(reason, 14f) }, { dialog -> listOf(
+                        "关闭" to { dialog.dismiss() },
+                        "查看发布页" to { dialog.dismiss(); openExternalLink(AppUpdates.RELEASES_URL) }
+                    ) })
+                })
+            }
+        }
+    }
+
     private fun editExecutionHistoryLimit() {
         val input = formInput("保留次数", ExecutionHistory.limit(this).toString()).apply {
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
@@ -2613,14 +2931,13 @@ class MainActivity : Activity() {
     private fun <T> work(task: () -> T, done: (T) -> Unit) { io.execute { try { val value = task(); runOnUiThread { if (!isDestroyed) done(value) } } catch (e: Exception) { runOnUiThread { message("操作失败", e.message ?: "未知错误") } } } }
     override fun onConfigurationChanged(newConfig: Configuration) { super.onConfigurationChanged(newConfig); if (prefs.getString("theme", "system") == "system") recreate() }
     override fun onBackPressed() {
+        favoritesSheet?.takeIf { it.isShowing }?.let { it.dismiss(); return }
         if (!granted) { super.onBackPressed(); return }
-        if (tab == 1 && (leftSelection.inSelectionMode || rightSelection.inSelectionMode)) {
-            clearBrowserSelection(if (browserSelection(activeBrowserLeft).inSelectionMode) activeBrowserLeft else !activeBrowserLeft)
+        if (tab == 1) {
             lastBackPressedAt = 0L
+            if (!goParent(activeBrowserLeft)) Toast.makeText(this, "已在根目录", Toast.LENGTH_SHORT).show()
             return
         }
-        if (tab == 1 && backBrowserDirectory()) return
-        if (tab == 1 && browserImportMode) { closeImportBrowser(); return }
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastBackPressedAt <= 2000L) finishAndRemoveTask()
         else {
@@ -2628,5 +2945,13 @@ class MainActivity : Activity() {
             Toast.makeText(this, "再按一次返回键退出", Toast.LENGTH_SHORT).show()
         }
     }
-    override fun onDestroy() { startButtonHandler.removeCallbacks(startButtonRefresh); SessionState.unsubscribe(listener); terminalReady = false; terminal?.destroy(); io.shutdown(); super.onDestroy() }
+    override fun onDestroy() {
+        favoritesSheet?.closeImmediately()
+        browserRequests.invalidateAll()
+        browserReadTasks.forEach { it?.cancel(false) }
+        browserIo.shutdown()
+        startButtonHandler.removeCallbacks(startButtonRefresh)
+        SessionState.unsubscribe(listener); terminalReady = false; terminal?.destroy()
+        io.shutdown(); updateIo.shutdownNow(); super.onDestroy()
+    }
 }
