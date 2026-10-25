@@ -93,7 +93,7 @@ adb install -r tubing-v1.4.0.apk
 发布 APK 的 SHA-256：
 
 ```text
-9a77574d110f9d3ed4c4602aedb6aed781b05851bbb0b45c3404e396b3287768
+b4009eb2e644ee7a3bfe198a2faab8377c25bcc5785db071ad4089b7b2d9d054
 ```
 
 ### 3. 完成第一次执行

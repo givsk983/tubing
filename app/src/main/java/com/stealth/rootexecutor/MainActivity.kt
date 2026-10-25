@@ -468,10 +468,13 @@ class MainActivity : Activity() {
         val selection = browserSelection(left)
         selection.retain(selectableBrowserEntries(left).map { it.path })
         val canGoParent = (if (left) leftPath else rightPath).trimEnd('/').isNotEmpty()
-        list.addView(text("📁  ..", 12f, foreground).apply {
-            gravity = Gravity.CENTER_VERTICAL
+        list.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(3), dp(3), dp(5), dp(3))
-            minHeight = dp(48)
+            addView(text("📁  ..", 12f, this@MainActivity.foreground).apply {
+                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+                setPadding(0, dp(3), 0, dp(1))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
             contentDescription = if (canGoParent) "返回上级目录" else "已在根目录"
             setOnClickListener { focusBrowser(left); goParent(left) }
             isEnabled = canGoParent
