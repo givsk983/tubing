@@ -3,6 +3,7 @@ package com.stealth.rootexecutor
 import android.util.Base64
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 data class ManagedFile(val kind: String, val name: String, val mode: String)
 data class CommandResult(val code: Int, val output: String)
@@ -21,6 +22,35 @@ class RootExecutor {
         p.inputStream.bufferedReader().useLines { lines -> lines.forEach { line -> output.appendLine(line); onOutput(line) } }
         return CommandResult(p.waitFor(), output.toString())
     }
+
+    /** Bounded Root setup/query, including su authorization and output drain. */
+    fun runBounded(command: String, seconds: Long = 10): CommandResult {
+        val p = ProcessBuilder("su", "-c", "timeout -s KILL $seconds sh -c ${quote(command)}").redirectErrorStream(true).start()
+        val output = StringBuilder()
+        val reader = Thread {
+            runCatching { p.inputStream.reader().use { stream ->
+                val buffer = CharArray(2048)
+                while (true) {
+                    val size = stream.read(buffer)
+                    if (size < 0) break
+                    synchronized(output) { if (output.length < 262_144) output.append(buffer, 0, minOf(size, 262_144 - output.length)) }
+                }
+            } }
+        }.apply { isDaemon = true; start() }
+        val finished = p.waitFor(seconds + 2, TimeUnit.SECONDS)
+        if (!finished) p.destroyForcibly()
+        reader.join(500)
+        runCatching { p.inputStream.close() }
+        return CommandResult(if (finished) p.exitValue() else 124, synchronized(output) { output.toString() })
+    }
+
+    fun pruneLogs(clear: Boolean = false): CommandResult = runBounded("""
+        set -eu
+        d=$base/logs
+        [ -d "${'$'}d" ] && [ ! -L $base ] && [ ! -L "${'$'}d" ] || exit 0
+        find "${'$'}d" -maxdepth 1 -type f -name '*.log' ${if (clear) "-delete" else "-mtime +6 -delete"}
+        ${if (clear) "" else "ls -1t \"${'$'}d\"/*.log 2>/dev/null | tail -n +21 | while IFS= read -r f; do [ ! -L \"${'$'}f\" ] && rm -f \"${'$'}f\"; done"}
+    """.trimIndent())
 
     fun initialize(): CommandResult = run("""
         set -eu
@@ -449,12 +479,12 @@ class RootExecutor {
         require(token.matches(Regex("[a-f0-9-]+")))
         val pid = quote("$base/tmp/$token.pid")
         val cancel = quote("$base/tmp/$token.cancel")
-        run("[ -d $base/tmp ] && [ ! -L $base ] && [ ! -L $base/tmp ] || exit 32; (umask 077; set -C; : > $cancel) 2>/dev/null || true; if [ -f $pid ] && [ ! -L $pid ]; then p=\$(cat $pid); case \"\$p\" in ''|*[!0-9]*) exit 1;; esac; kill -TERM -- -\"\$p\" 2>/dev/null || true; sleep 1; kill -KILL -- -\"\$p\" 2>/dev/null || true; rm -f $pid; fi")
+        runBounded("[ -d $base/tmp ] && [ ! -L $base ] && [ ! -L $base/tmp ] || exit 32; (umask 077; set -C; : > $cancel) 2>/dev/null || true; if [ -f $pid ] && [ ! -L $pid ]; then p=\$(cat $pid); case \"\$p\" in ''|*[!0-9]*) exit 1;; esac; kill -TERM -- -\"\$p\" 2>/dev/null || true; sleep 1; kill -KILL -- -\"\$p\" 2>/dev/null || true; rm -f $pid; fi", 4)
     }
 
     fun saveSession(local: File, token: String): CommandResult {
         require(token.matches(Regex("[a-f0-9-]+")))
         val dest = quote("$base/logs/$token.log")
-        return run("[ -d $base/logs ] && [ ! -L $base ] && [ ! -L $base/logs ] && [ ! -e $dest ] && [ ! -L $dest ] && cp ${quote(local.absolutePath)} $dest && chmod 600 $dest")
+        return runBounded("[ -d $base/logs ] && [ ! -L $base ] && [ ! -L $base/logs ] && [ ! -e $dest ] && [ ! -L $dest ] && cp ${quote(local.absolutePath)} $dest && chmod 600 $dest", 5)
     }
 }

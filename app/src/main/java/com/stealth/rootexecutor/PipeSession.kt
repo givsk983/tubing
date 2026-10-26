@@ -10,6 +10,7 @@ class PipeSession(
     private val token: String,
     private val launch: (String) -> Process = { command -> ProcessBuilder("su", "-c", command).redirectErrorStream(true).start() }
 ) : ExecutionSession {
+    var onInputEcho: ((String) -> Unit)? = null
     @Volatile private var process: Process? = null
     @Volatile private var input: PipeInput? = null
     private val stopped = AtomicBoolean(false)
@@ -22,7 +23,7 @@ class PipeSession(
         if (stopped.get()) { child.destroy(); error("执行已取消") }
         input = PipeInput(
             write = { value -> child.outputStream.write(value.toByteArray(Charsets.UTF_8)); child.outputStream.flush() },
-            echo = output,
+            echo = onInputEcho ?: output,
             interrupt = { root.signalSession(token, "INT") },
             eof = { child.outputStream.close() }
         )

@@ -20,9 +20,11 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
 
-private data class ScriptInputPreset(val name: String, val steps: List<String>)
+private data class ScriptInputPreset(val name: String, val steps: List<String>, val prompts: List<String> = emptyList(), val sensitive: Boolean = false,
+    val sendMode: InputSendMode = InputSendMode.DELAY)
 private data class SyncSource(val label: String, val path: String)
 private data class QuickShortcut(val name: String, val kind: String, val fileName: String, val presetName: String?)
+private data class InstalledAutomationApp(val packageName: String, val label: String, val icon: android.graphics.drawable.Drawable)
 
 class MainActivity : Activity() {
     private val io = Executors.newSingleThreadExecutor()
@@ -34,6 +36,8 @@ class MainActivity : Activity() {
     private val loadedBrowserPaths = arrayOfNulls<String>(2)
     private var browserPanes: LinearLayout? = null
     private val updateIo = Executors.newSingleThreadExecutor()
+    private val appPickerIo = Executors.newSingleThreadExecutor()
+    private var exportingModule = false
     private var checkingUpdate = false
     private var checkUpdateButton: Button? = null
     private val root = RootExecutor()
@@ -118,6 +122,10 @@ class MainActivity : Activity() {
         colors()
         setTheme(if (dark) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(savedInstanceState)
+        if (!prefs.getBoolean("privacyDefaultsV1", false)) prefs.edit().putBoolean("saveLogs", false).putBoolean("privacyDefaultsV1", true).apply()
+        io.execute { runCatching { PrivateInputStore.migrate(prefs) }.onFailure {
+            runOnUiThread { if (!isDestroyed) message("输入数据迁移未完成", "加密存储不可用，原数据已保留。请暂缓自动执行。") }
+        } }
         showGate(); checkRoot()
     }
     private fun colors() {
@@ -177,6 +185,7 @@ class MainActivity : Activity() {
         page.addView(text("连接设备的执行核心。\n授权成功后，即可进入交互终端。"))
         page.addView(text(message, 15f, accent))
         page.addView(button(if (checking) "正在检查…" else "重新授权") { checkRoot() })
+        page.addView(button("安装配套模块") { showModuleInstaller() })
         page.addView(button("退出应用") { finishAndRemoveTask() })
     }
     private fun checkRoot() {
@@ -1755,9 +1764,13 @@ class MainActivity : Activity() {
         return dialog
     }
 
-    private fun launch(inputSteps: List<String> = emptyList(), trackInputHistory: Boolean = true): Boolean {
+    private fun launch(inputSteps: List<String> = emptyList(), trackInputHistory: Boolean = true,
+        inputPrompts: List<String> = emptyList(), sensitive: Boolean = false, sendMode: InputSendMode = InputSendMode.DELAY): Boolean {
         if (SessionState.running) { message("脚本正在运行", "请先结束当前会话。"); return false }
         val file = selected ?: run { chooseFile(); return false }
+        if (!sendMode.valid(inputSteps, inputPrompts)) {
+            message("方案配置不完整", "等待提示词模式需要为每项输入填写提示词，也可切换为延时发送。"); return false
+        }
         if (!SessionState.startGate.tryStart(android.os.SystemClock.elapsedRealtime())) return false
         synchronized(inputCaptureLock) {
             inputCaptureBuffer.clear(); skipNextLineFeed = false; skipEscapeSequence = 0; inputCaptureTrackable = true
@@ -1768,7 +1781,10 @@ class MainActivity : Activity() {
         terminal?.evaluateJavascript("window.setMode(${JSONObject.quote(mode.key)})", null)
         return try {
             startForegroundService(Intent(this, ExecutionService::class.java).putExtra("kind", file.kind).putExtra("name", file.name).putExtra("mode", mode.key)
-                .putExtra("rememberInput", remembersInput(file)).putExtra("trackInputHistory", trackInputHistory)
+                .putExtra("rememberInput", !sensitive && remembersInput(file)).putExtra("trackInputHistory", !sensitive && trackInputHistory)
+                .putStringArrayListExtra("inputPrompts", ArrayList(inputPrompts))
+                .putExtra("inputSendMode", sendMode.key)
+                .putStringArrayListExtra("sensitiveValues", ArrayList(if (sensitive) inputSteps else emptyList()))
                 .putStringArrayListExtra("inputSteps", ArrayList(inputSteps)))
             refreshStartButton()
             true
@@ -2217,7 +2233,9 @@ class MainActivity : Activity() {
             }
             selected = file
             val preset = shortcut.presetName?.let { name -> readInputPresets(file).firstOrNull { it.name == name } }
-            if (launch(preset?.steps ?: emptyList(), trackInputHistory = false)) watchQuickExecution(shortcut.name)
+            if (launch(preset?.steps ?: emptyList(), trackInputHistory = false,
+                    inputPrompts = preset?.prompts ?: emptyList(), sensitive = preset?.sensitive ?: false,
+                    sendMode = preset?.sendMode ?: InputSendMode.DELAY)) watchQuickExecution(shortcut.name)
             }
         }
     }
@@ -2265,7 +2283,7 @@ class MainActivity : Activity() {
     }
 
     private fun readInputHistory(file: ManagedFile): List<String> = try {
-        val array = org.json.JSONArray(prefs.getString(inputHistoryKey(file, "history"), "[]"))
+        val array = org.json.JSONArray(PrivateInputStore.read(prefs, inputHistoryKey(file, "history")))
         List(array.length()) { array.getString(it) }
     } catch (_: Exception) { emptyList() }
 
@@ -2273,7 +2291,7 @@ class MainActivity : Activity() {
         if (line.isBlank() || line.length > 4096) return
         val history = readInputHistory(file).toMutableList().apply { add(line) }.takeLast(20)
         val array = org.json.JSONArray().apply { history.forEach { put(it) } }
-        prefs.edit().putString(inputHistoryKey(file, "history"), array.toString()).apply()
+        PrivateInputStore.write(prefs, inputHistoryKey(file, "history"), array.toString())
     }
 
     private fun showInputHistory() {
@@ -2371,11 +2389,13 @@ class MainActivity : Activity() {
     }
 
     private fun readInputPresets(file: ManagedFile): MutableList<ScriptInputPreset> = try {
-        val array = org.json.JSONArray(prefs.getString(inputHistoryKey(file, "presets"), "[]"))
+        val array = org.json.JSONArray(PrivateInputStore.read(prefs, inputHistoryKey(file, "presets")))
         MutableList(array.length()) { i ->
             array.getJSONObject(i).let { preset ->
                 val steps = preset.getJSONArray("steps")
-                ScriptInputPreset(preset.getString("name"), List(steps.length()) { steps.getString(it) })
+                val prompts = preset.optJSONArray("prompts")
+                ScriptInputPreset(preset.getString("name"), List(steps.length()) { steps.getString(it) },
+                    List(steps.length()) { prompts?.optString(it) ?: "" }, preset.optBoolean("sensitive", false), InputSendMode.fromKey(preset.optString("sendMode")))
             }
         }
     } catch (_: Exception) { mutableListOf() }
@@ -2384,9 +2404,10 @@ class MainActivity : Activity() {
         val array = org.json.JSONArray()
         presets.forEach { preset ->
             val steps = org.json.JSONArray().apply { preset.steps.forEach { put(it) } }
-            array.put(JSONObject().put("name", preset.name).put("steps", steps))
+            array.put(JSONObject().put("name", preset.name).put("steps", steps)
+                .put("prompts", org.json.JSONArray(preset.prompts)).put("sensitive", preset.sensitive).put("sendMode", preset.sendMode.key))
         }
-        prefs.edit().putString(inputHistoryKey(file, "presets"), array.toString()).apply()
+        PrivateInputStore.write(prefs, inputHistoryKey(file, "presets"), array.toString())
     }
 
     private fun showInputPresets() {
@@ -2431,7 +2452,7 @@ class MainActivity : Activity() {
                 presets.forEachIndexed { index, preset ->
                     val card = dialogCard()
                     card.addView(text(preset.name, 17f).apply { typeface = Typeface.DEFAULT_BOLD })
-                    card.addView(text("${preset.steps.size} 项输入", 13f, mutedColor()))
+                    card.addView(text("${preset.steps.size} 项输入 · ${preset.sendMode.label}", 13f, mutedColor()))
                     val actions = LinearLayout(this@MainActivity)
                     actions.addView(button("编辑") { dialog.dismiss(); editInputPreset(file, index) }, LinearLayout.LayoutParams(0, dp(48), 1f))
                     actions.addView(button("重命名") { dialog.dismiss(); renameInputPreset(file, index) }, LinearLayout.LayoutParams(0, dp(48), 1f))
@@ -2489,11 +2510,44 @@ class MainActivity : Activity() {
         val current = index?.let { readInputPresets(file).getOrNull(it) }
         val nameInput = formInput("例如：默认配置", current?.name ?: "")
         val stepsInput = formInput("每行一项输入", current?.steps?.joinToString("\n") ?: "", multiline = true).apply { minLines = 4 }
+        val promptsInput = formInput("每行一项等待提示，例如：请选择操作", current?.prompts?.joinToString("\n") ?: "", multiline = true).apply { minLines = 3 }
+        var sendMode = current?.sendMode ?: InputSendMode.DELAY
+        val promptFields = column().apply {
+            addView(text("等待提示词 · 与输入逐行对应，按原文匹配", 13f, mutedColor())); addView(promptsInput)
+            visibility = if (sendMode == InputSendMode.PROMPT) View.VISIBLE else View.GONE
+        }
+        val modeHint = text("", 12f, mutedColor())
+        val modeGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        val delayId = View.generateViewId()
+        val promptId = View.generateViewId()
+        listOf(delayId to InputSendMode.DELAY, promptId to InputSendMode.PROMPT).forEach { (id, mode) ->
+            modeGroup.addView(RadioButton(this).apply {
+                this.id = id; text = mode.label; textSize = 14f; minHeight = dp(48)
+                setTextColor(this@MainActivity.foreground)
+                buttonTintList = android.content.res.ColorStateList(
+                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(accent, mutedColor()))
+            }, RadioGroup.LayoutParams(0, -2, 1f))
+        }
+        fun updateSendMode() {
+            promptFields.visibility = if (sendMode == InputSendMode.PROMPT) View.VISIBLE else View.GONE
+            modeHint.text = if (sendMode == InputSendMode.DELAY) "启动就绪后等待 1.5 秒，之后每项间隔 0.9 秒发送；无需填写提示词。"
+                else "每项输入等待对应提示词；超过 30 秒未匹配时停止任务。"
+        }
+        modeGroup.check(if (sendMode == InputSendMode.PROMPT) promptId else delayId)
+        modeGroup.setOnCheckedChangeListener { _, id ->
+            sendMode = if (id == promptId) InputSendMode.PROMPT else InputSendMode.DELAY
+            updateSendMode()
+        }
+        updateSendMode()
+        val sensitiveInput = CheckBox(this).apply { text = "包含敏感输入：隐藏回显并禁用输出日志"; isChecked = current?.sensitive ?: false }
         styledDialog(if (current == null) "新建输入方案" else "编辑输入方案", file.name, {
             column().apply {
                 addView(text("方案名称", 13f, mutedColor())); addView(nameInput)
+                addView(text("自动发送方式", 13f, mutedColor())); addView(modeGroup); addView(modeHint)
                 addView(text("输入内容 · 每行一项", 13f, mutedColor())); addView(stepsInput)
-                addView(text("保存在本机，运行时逐项确认发送。请勿保存密码或密钥。", 12f, mutedColor()))
+                addView(promptFields)
+                addView(sensitiveInput)
+                addView(text("默认使用旧版延时发送。输入使用本机密钥加密保存。", 12f, mutedColor()))
             }
         }, { dialog -> listOf(
             "取消" to { dialog.dismiss() },
@@ -2503,6 +2557,11 @@ class MainActivity : Activity() {
                 if (name.isBlank()) { nameInput.error = "请填写方案名称"; nameInput.requestFocus(); return@save }
                 if (rawSteps.isBlank()) { stepsInput.error = "请填写至少一项输入"; stepsInput.requestFocus(); return@save }
                 val steps = rawSteps.split('\n').map { it.removeSuffix("\r") }
+                val promptText = promptsInput.text.toString()
+                val expected = if (promptText.isBlank()) emptyList() else promptText.split('\n').map { it.removeSuffix("\r") }
+                if (sendMode == InputSendMode.PROMPT && (expected.size != steps.size || expected.any { it.isBlank() || it.length > 512 })) {
+                    promptsInput.error = "提示词需与输入逐行对应，每项 1～512 个字符"; return@save
+                }
                 if (steps.size > 50 || steps.any { it.length > 4096 }) {
                     stepsInput.error = "最多 50 项，每项最多 4096 个字符"; stepsInput.requestFocus(); return@save
                 }
@@ -2511,7 +2570,7 @@ class MainActivity : Activity() {
                     nameInput.error = "名称已存在，请使用另一个名称"; nameInput.requestFocus(); return@save
                 }
                 val target = updated.indexOfFirst { it.name == current?.name }
-                val preset = ScriptInputPreset(name, steps)
+                val preset = ScriptInputPreset(name, steps, expected, sensitiveInput.isChecked, sendMode)
                 if (target >= 0) updated[target] = preset else updated.add(preset)
                 saveInputPresets(file, updated)
                 if (current != null && current.name != name) updateShortcutPresetReferences(file, current.name, name)
@@ -2522,6 +2581,7 @@ class MainActivity : Activity() {
     }
 
     private fun confirmPresetStep(preset: ScriptInputPreset, index: Int) {
+        if (preset.sensitive) { message("敏感方案", "请通过快捷方式自动发送，执行时会隐藏敏感回显并禁用日志。"); return }
         if (!SessionState.running || ExecutionService.active == null) {
             message("脚本已结束", "方案已停止，没有继续发送后续输入。")
             return
@@ -2683,13 +2743,323 @@ class MainActivity : Activity() {
         layoutParams = LinearLayout.LayoutParams(-1, -2)
     }
 
+    private fun showAppAutomation() {
+        val bindings = AppAutomation.bindings(prefs)
+        val entries = bindings.entries.sortedBy { it.key }
+        val status = text("正在读取模块状态…", 13f, mutedColor())
+        val install = button("安装 / 更新配套模块") { showModuleInstaller() }
+        val recent = getSharedPreferences("automation_status", MODE_PRIVATE)
+        val recentTime = recent.getLong("time", 0)
+        val recentLabel = if (recentTime > 0) java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(recentTime)) else ""
+        styledDialog("App 自动执行", "同包名分身共用方案与冷却 · 运行中跳过", { dialog ->
+            column().apply {
+                addView(status)
+                addView(install, LinearLayout.LayoutParams(-1, dp(50)).apply { bottomMargin = dp(8) })
+                addView(text("最近结果 $recentLabel\n${recent.getString("message", "暂无执行记录")}", 13f))
+                if (entries.isEmpty()) addView(text("先安装模块并添加绑定。", 14f))
+                entries.forEach { entry ->
+                    val policy = AppAutomation.policy(prefs, entry.key)
+                    addView(optionCard(entry.value, "${entry.key}\n冷却 ${policy.cooldownSeconds} 秒 · 超时 ${policy.timeoutSeconds} 秒${if (policy.once) " · 单次启用" else ""}") {
+                        dialog.dismiss()
+                        AlertDialog.Builder(this@MainActivity).setTitle(entry.value)
+                            .setItems(arrayOf("冷却 / 超时 / 单次启用", "重新启用并清除冷却", "删除绑定")) { _, item ->
+                                when (item) {
+                                    0 -> editAutomationPolicy(entry.key)
+                                    1 -> { AppAutomation.rearm(prefs, entry.key); showAppAutomation() }
+                                    2 -> saveAppAutomation(AppAutomation.bindings(prefs) - entry.key)
+                                }
+                            }.setNegativeButton("取消", null).show()
+                    })
+                }
+            }
+        }, { dialog -> listOf(
+            "添加 / 修改" to { dialog.dismiss(); addAppAutomationBinding() },
+            "重新同步" to { dialog.dismiss(); saveAppAutomation(bindings) },
+            "关闭" to { dialog.dismiss() }
+        ) })
+        io.execute {
+            val report = runCatching { AppAutomation.moduleStatus(root) }.getOrDefault("读取状态失败，请检查 Root 授权")
+            runOnUiThread { if (!isDestroyed) {
+                status.text = report
+                install.text = if (report.contains("模块未安装")) "安装内置配套模块" else "安装 / 更新配套模块"
+            } }
+        }
+    }
+
+    private fun showModuleInstaller() {
+        val info = text("正在读取内置模块…", 13f, mutedColor())
+        val choices = column()
+        val dialog = styledDialog("安装配套模块", "安装包已内置，无需另外下载", { column().apply {
+            addView(info)
+            addView(text("选择手机上的 Root 管理器继续安装。安装后按管理器提示重启，再回来同步 App 绑定。", 14f))
+            addView(choices)
+        } }, { panel -> listOf("仅保存 ZIP" to { panel.dismiss(); exportModule(null) }, "关闭" to { panel.dismiss() }) })
+        appPickerIo.execute {
+            val result = runCatching {
+                val bundle = BundledModule.read(this)
+                val managers = listOf("com.topjohnwu.magisk" to "Magisk（面具）", "me.weishu.kernelsu" to "KernelSU")
+                    .filter { packageManager.getLaunchIntentForPackage(it.first) != null }
+                bundle.version to managers
+            }
+            runOnUiThread {
+                if (!isDestroyed && dialog.isShowing) {
+                    result.fold({ (version, managers) ->
+                        info.text = "内置模块 v$version · 配套当前 Tubing"
+                        if (managers.isEmpty()) choices.addView(text("未找到 Magisk / KernelSU。可先保存 ZIP，再用你的 Root 管理器从本地安装。", 13f, mutedColor()))
+                        managers.forEach { (pkg, name) -> choices.addView(optionCard("交给 $name 安装", "保存安装包并打开管理器") {
+                            dialog.dismiss(); exportModule(pkg)
+                        }) }
+                    }, { info.text = "内置模块读取失败，请重新安装完整 APK。" })
+                }
+            }
+        }
+    }
+
+    private fun exportModule(manager: String?) {
+        if (exportingModule) return
+        exportingModule = true
+        appPickerIo.execute {
+            val result = runCatching {
+                val bundle = BundledModule.read(this)
+                val uri = if (Build.VERSION.SDK_INT >= 29) BundledModule.exportDownloads(this, bundle) else null
+                bundle.fileName to uri
+            }
+            runOnUiThread {
+                exportingModule = false
+                if (!isDestroyed) result.fold({ (name, uri) ->
+                    if (uri == null) {
+                        prefs.edit().putString("moduleExportManager", manager ?: "").apply()
+                        try { startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("application/zip").putExtra(Intent.EXTRA_TITLE, name), 110) }
+                        catch (_: Exception) { message("无法保存安装包", "请安装可用的系统文件管理器后重试。") }
+                    } else openModuleManager(manager, uri, name)
+                }, { message("模块导出失败", it.message ?: "无法保存安装包，请重试。") })
+            }
+        }
+    }
+
+    private fun openModuleManager(manager: String?, uri: Uri, name: String) {
+        if (manager.isNullOrBlank()) {
+            message("模块已保存", "安装包：$name\nAndroid 10 及以上位于 Download/Tubing；可在 Root 管理器的模块页面选择该 ZIP 安装。"); return
+        }
+        val intent = BundledModule.managerIntent(this, manager, uri)
+        if (intent == null) { message("无法打开管理器", "安装包已保存，可手动打开 Root 管理器并选择 $name。"); return }
+        try {
+            startActivity(intent)
+            if (intent.action != Intent.ACTION_VIEW)
+                Toast.makeText(this, "请在管理器的模块页面选择安装包：$name（Download/Tubing）", Toast.LENGTH_LONG).show()
+        } catch (_: Exception) {
+            val fallback = packageManager.getLaunchIntentForPackage(manager)
+            if (fallback != null && runCatching { startActivity(fallback) }.isSuccess)
+                Toast.makeText(this, "安装包已保存，请从模块页面选择 $name。", Toast.LENGTH_LONG).show()
+            else message("无法打开管理器", "安装包已保存，请手动选择 $name 安装。")
+        }
+    }
+
+    private fun editAutomationPolicy(pkg: String) {
+        val policy = AppAutomation.policy(prefs, pkg)
+        val cooldown = formInput("冷却秒数 10～86400", policy.cooldownSeconds.toString()).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER }
+        val timeout = formInput("任务超时秒数 5～3600", policy.timeoutSeconds.toString()).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER }
+        val once = CheckBox(this).apply { text = "单次启用：执行一次后暂停，需手动重新启用"; isChecked = policy.once }
+        styledDialog("执行策略", pkg, { column().apply {
+            addView(text("冷却时间（秒）", 13f)); addView(cooldown)
+            addView(text("两次自动执行之间的最短间隔。例如 60 秒：启动后 60 秒内再次进入此 App 会跳过。冷却结束不会自动重跑，需离开后再进入。", 12f, mutedColor()))
+            addView(text("任务超时（秒）", 13f)); addView(timeout)
+            addView(text("单次任务允许运行的最长时间。例如 120 秒：超过 2 分钟仍未结束，会终止任务并记录超时；提前结束不受影响。", 12f, mutedColor()))
+            addView(once)
+        } }, { dialog -> listOf("取消" to { dialog.dismiss() }, "保存" to save@{
+            val c = cooldown.text.toString().toIntOrNull()
+            val t = timeout.text.toString().toIntOrNull()
+            if (c == null || c !in 10..86400) { cooldown.error = "请输入 10～86400"; return@save }
+            if (t == null || t !in 5..3600) { timeout.error = "请输入 5～3600"; return@save }
+            AppAutomation.savePolicy(prefs, pkg, AutomationPolicy(c, t, once.isChecked))
+            dialog.dismiss(); showAppAutomation()
+        }) })
+    }
+
+    private fun addAppAutomationBinding() {
+        if (quickShortcuts().isEmpty()) { message("暂无快捷方式", "请先在快捷方式中配置脚本与输入方案。"); return }
+        val dialog = android.app.Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        val body = dialogPanel(maximumHeightDp = 620)
+        body.addView(text("选择目标应用", 22f).apply { typeface = Typeface.DEFAULT_BOLD })
+        body.addView(text("选择 App 绑定快捷方式，同包名分身共用", 13f, mutedColor()))
+        val search = formInput("搜索应用名称或包名").apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        }
+        body.addView(search)
+        val count = text("正在读取已安装应用…", 12f, mutedColor())
+        body.addView(count)
+        val list = ListView(this).apply {
+            divider = null
+            clipToPadding = false
+            setPadding(0, 0, 0, dp(4))
+            isVerticalScrollBarEnabled = true
+        }
+        body.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
+        val empty = text("", 14f, mutedColor()).apply { gravity = Gravity.CENTER; visibility = View.GONE }
+        body.addView(empty)
+        val footer = LinearLayout(this).apply {
+            addView(button("手动填包名") { dialog.dismiss(); enterAutomationPackage() }, LinearLayout.LayoutParams(0, dp(50), 1f))
+            addView(button("取消") { dialog.dismiss() }, LinearLayout.LayoutParams(0, dp(50), 1f))
+        }
+        body.addView(footer, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        var allApps = emptyList<InstalledAutomationApp>()
+        var filtered = allApps
+        val bindings = AppAutomation.bindings(prefs)
+        val adapter = object : BaseAdapter() {
+            override fun getCount() = filtered.size
+            override fun getItem(position: Int) = filtered[position]
+            override fun getItemId(position: Int) = position.toLong()
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                val app = getItem(position)
+                val row = convertView as? LinearLayout ?: LinearLayout(this@MainActivity).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    minimumHeight = dp(76)
+                    setPadding(dp(8), dp(10), dp(8), dp(10))
+                    addView(ImageView(this@MainActivity).apply { scaleType = ImageView.ScaleType.FIT_CENTER },
+                        LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(12) })
+                    addView(column().apply {
+                        addView(text("", 16f).apply { typeface = Typeface.DEFAULT_BOLD; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(0, 0, 0, dp(3)) })
+                        addView(text("", 12f, mutedColor()).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; setPadding(0, 0, 0, 0) })
+                        addView(text("", 12f, accent).apply { setPadding(0, dp(3), 0, 0) })
+                    }, LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(text("›", 26f, accent).apply { setPadding(dp(8), 0, 0, 0) })
+                }
+                (row.getChildAt(0) as ImageView).setImageDrawable(app.icon)
+                val labels = row.getChildAt(1) as LinearLayout
+                (labels.getChildAt(0) as TextView).text = app.label
+                (labels.getChildAt(1) as TextView).text = app.packageName
+                (labels.getChildAt(2) as TextView).apply {
+                    text = bindings[app.packageName]?.let { "已绑定 · $it" } ?: ""
+                    visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
+                }
+                return row
+            }
+        }
+        list.adapter = adapter
+        fun filterApps() {
+            val term = search.text.toString().trim()
+            filtered = allApps.filter { term.isEmpty() || it.label.contains(term, true) || it.packageName.contains(term, true) }
+            count.text = if (term.isEmpty()) "${allApps.size} 个应用 · 点击选择" else "找到 ${filtered.size} 个应用"
+            empty.text = if (allApps.isEmpty()) "未读取到可打开的应用，可尝试手动填写包名。" else "没有匹配的应用，试试其他名称或包名。"
+            empty.visibility = if (filtered.isEmpty()) View.VISIBLE else View.GONE
+            adapter.notifyDataSetChanged()
+            list.setSelection(0)
+        }
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { filterApps() }
+            override fun afterTextChanged(s: android.text.Editable?) = Unit
+        })
+        list.setOnItemClickListener { _, _, position, _ ->
+            val app = filtered[position]
+            (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).hideSoftInputFromWindow(search.windowToken, 0)
+            dialog.dismiss()
+            chooseAutomationShortcut(app.packageName, app.label)
+        }
+        dialog.setContentView(body)
+        dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        dialog.show()
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+        dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels - dp(32), dp(480)), minOf((resources.displayMetrics.heightPixels * 0.84f).toInt(), dp(620)))
+        body.isFocusableInTouchMode = true; body.requestFocus()
+        appPickerIo.execute {
+            val result = runCatching {
+                val collator = java.text.Collator.getInstance(java.util.Locale.getDefault())
+                packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                    .distinctBy { it.activityInfo.packageName }.filter { it.activityInfo.packageName != packageName }
+                    .mapNotNull { info -> runCatching {
+                        val app = info.activityInfo.applicationInfo
+                        InstalledAutomationApp(app.packageName, app.loadLabel(packageManager).toString(), app.loadIcon(packageManager))
+                    }.getOrNull() }
+                    .sortedWith(compareBy<InstalledAutomationApp> { if (bindings.containsKey(it.packageName)) 0 else 1 }
+                        .thenComparator { a, b -> collator.compare(a.label, b.label) }.thenBy { it.packageName })
+            }
+            runOnUiThread {
+                if (!isDestroyed && dialog.isShowing) {
+                    allApps = result.getOrDefault(emptyList()); filterApps()
+                    if (result.isFailure) { count.text = "读取应用失败"; empty.text = "可点击下方手动填包名，或稍后重试。" }
+                }
+            }
+        }
+    }
+
+    private fun enterAutomationPackage() {
+        val input = formInput("例如 com.example.app").apply { inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS }
+        styledDialog("手动填写包名", "适用于应用列表中未显示的 App", { column().apply {
+            addView(text("目标 App 包名", 13f, mutedColor())); addView(input)
+        } }, { dialog -> listOf("返回列表" to { dialog.dismiss(); addAppAutomationBinding() }, "下一步" to next@{
+            val pkg = input.text.toString().trim()
+            if (!AppAutomation.validPackage(pkg) || pkg == packageName) { input.error = "请输入有效的其他 App 包名"; return@next }
+            dialog.dismiss(); chooseAutomationShortcut(pkg, pkg)
+        }) })
+    }
+
+    private fun chooseAutomationShortcut(pkg: String, label: String) {
+        val shortcuts = quickShortcuts()
+        if (shortcuts.isEmpty()) { message("暂无快捷方式", "请先创建快捷方式。"); return }
+        val current = AppAutomation.bindings(prefs)[pkg]
+        styledDialog("选择快捷方式", "$label\n$pkg", { dialog -> column().apply {
+            shortcuts.forEach { shortcut ->
+                addView(optionCard(shortcut.name, "${shortcut.fileName}\n输入方案 · ${shortcut.presetName ?: "不使用"}", current == shortcut.name) {
+                    dialog.dismiss(); saveAppAutomation(AppAutomation.bindings(prefs) + (pkg to shortcut.name))
+                })
+            }
+        } }, { dialog -> listOf("重选应用" to { dialog.dismiss(); addAppAutomationBinding() }, "取消" to { dialog.dismiss() }) })
+    }
+
+    private fun clearPrivateLogs() {
+        confirmAction("清理日志与记忆输入", "清除终端显示、已保存输出日志及记忆输入；保留脚本和输入方案。运行中的任务请先停止。", "清理") {
+            if (SessionState.running) { message("任务运行中", "请先停止任务再清理。"); return@confirmAction }
+            io.execute {
+                val result = runCatching {
+                    val cleaned = root.pruneLogs(clear = true)
+                    check(cleaned.code == 0) { "Root 日志清理失败" }
+                    cacheDir.listFiles()?.filter { it.name.matches(Regex("[a-f0-9-]+\\.log")) }?.forEach { check(it.delete()) }
+                    val editor = prefs.edit()
+                    prefs.all.keys.filter { it.startsWith("scriptInput_history_") }.forEach { editor.remove(it) }
+                    check(editor.commit())
+                    SessionState.clear()
+                }
+                runOnUiThread { if (!isDestroyed) message(if (result.isSuccess) "已清理" else "部分清理未完成", result.exceptionOrNull()?.message ?: "日志与记忆输入已清理，方案已保留。") }
+            }
+        }
+    }
+
+    private fun saveAppAutomation(bindings: Map<String, String>) {
+        io.execute {
+            val saved = runCatching {
+                // Persist first: stale module configuration cannot execute a removed binding.
+                AppAutomation.save(prefs, bindings)
+                val result = AppAutomation.sync(root, bindings)
+                check(result.code == 0) { result.output.ifBlank { "Root 配置写入失败" } }
+            }
+            runOnUiThread {
+                if (!isDestroyed) {
+                    saved.fold({ Toast.makeText(this, "绑定已同步，模块将在下次切入 App 时执行", Toast.LENGTH_LONG).show(); showAppAutomation() },
+                        { message("模块配置同步失败", "${it.message}\n绑定已保存在 App 内；获得 Root 后点击重新同步。") })
+                }
+            }
+        }
+    }
+
     private fun settingsPage() {
         val area = column()
         area.addView(text("设置", 25f).apply { setPadding(dp(4), dp(8), dp(4), dp(16)) })
-        area.addView(settingsHeading("显示与终端"))
-        val displayGroup = settingsGroup()
-        area.addView(displayGroup)
-        displayGroup.addView(settingsRow("默认导入方式 · ${ImportSource.fromKey(prefs.getString("importSource", "ask")).label}") { chooseDefaultImportSource() })
+        fun addGroup(title: String) = settingsGroup().also { group ->
+            area.addView(settingsHeading(title)); area.addView(group)
+        }
+        val moduleGroup = addGroup("面具模块")
+        val displayGroup = addGroup("显示与外观")
+        val fileGroup = addGroup("文件管理")
+        val executionGroup = addGroup("终端与执行")
+        val historyGroup = addGroup("日志与记录")
+        val deviceGroup = addGroup("设备与维护")
+        val projectGroup = addGroup("反馈与项目")
+        moduleGroup.addView(settingsRow("App 自动执行") { showAppAutomation() })
+        fileGroup.addView(settingsRow("默认导入方式 · ${ImportSource.fromKey(prefs.getString("importSource", "ask")).label}") { chooseDefaultImportSource() })
         val quickHome = prefs.getBoolean("homeDefaultQuickInterface", prefs.getBoolean("quickInterface", false))
         displayGroup.addView(settingsRow("首页默认 · ${if (quickHome) "快捷版" else "完整版"}") {
             styledDialog("首页默认界面", "启动应用时优先打开的界面", { dialog ->
@@ -2706,7 +3076,7 @@ class MainActivity : Activity() {
             }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
         val rememberByDefault = prefs.getBoolean("defaultRememberInput", false)
-        displayGroup.addView(settingsRow("默认记忆输入 · ${if (rememberByDefault) "开" else "关"}") {
+        executionGroup.addView(settingsRow("默认记忆输入 · ${if (rememberByDefault) "开" else "关"}") {
             styledDialog("默认记忆输入", "此默认值用于没有单独设置过记忆输入的脚本。已有单独设置的脚本保持原样。", { dialog ->
                 column().apply {
                     listOf(false, true).forEach { enabled ->
@@ -2721,7 +3091,7 @@ class MainActivity : Activity() {
             }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
         modeSelector = settingsRow(modeText()) { chooseMode() }
-        displayGroup.addView(modeSelector)
+        executionGroup.addView(modeSelector)
         displayGroup.addView(settingsRow("主题 · " + when (prefs.getString("theme", "system")) { "dark" -> "深色"; "light" -> "浅色"; else -> "跟随系统" }) {
             val themes = listOf(Triple("system", "跟随系统", "自动使用设备的外观设置"),
                 Triple("dark", "深色", "深蓝灰背景，适合暗光环境"), Triple("light", "浅色", "明亮背景，适合日间阅读"))
@@ -2735,7 +3105,7 @@ class MainActivity : Activity() {
                 }
             }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
-        displayGroup.addView(settingsRow("终端字体 · ${prefs.getInt("fontSize", 14)}") {
+        executionGroup.addView(settingsRow("终端字体 · ${prefs.getInt("fontSize", 14)}") {
             val sizes = arrayOf(12, 14, 16, 18, 20)
             styledDialog("终端字体大小", "选择字号 · 下方文字为大小预览", { dialog ->
                 column().apply {
@@ -2755,27 +3125,33 @@ class MainActivity : Activity() {
                 }
             }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
         })
-        displayGroup.addView(settingsRow("文件管理字体大小 · ${browserFontSize()}") { chooseBrowserFontSize() })
-        displayGroup.addView(settingsRow("目录过渡动画 · ${browserTransitionStyle().label}") { chooseBrowserTransitionStyle() })
-        displayGroup.addView(Switch(this).apply {
-            text = "执行结束后自动保存日志"; setTextColor(this@MainActivity.foreground); isChecked = prefs.getBoolean("saveLogs", true)
+        fileGroup.addView(settingsRow("文件管理字体大小 · ${browserFontSize()}") { chooseBrowserFontSize() })
+        fileGroup.addView(settingsRow("目录过渡动画 · ${browserTransitionStyle().label}") { chooseBrowserTransitionStyle() })
+        historyGroup.addView(Switch(this).apply {
+            text = "保存输出日志（敏感方案不保存）"; setTextColor(this@MainActivity.foreground); isChecked = prefs.getBoolean("saveLogs", false)
             setPadding(dp(16), dp(12), dp(16), dp(12)); minimumHeight = dp(52)
             setOnCheckedChangeListener { _, enabled -> prefs.edit().putBoolean("saveLogs", enabled).apply() }
         })
-        area.addView(settingsHeading("设备与记录"))
-        val deviceGroup = settingsGroup()
-        area.addView(deviceGroup)
-        deviceGroup.addView(settingsRow("执行历史保留 · ${ExecutionHistory.limit(this)} 次") { editExecutionHistoryLimit() })
+        historyGroup.addView(text("输出日志默认关闭；开启后单次最多约 512KB，保留 7 天、最多 20 份。", 12f, mutedColor()))
+        executionGroup.addView(settingsRow("普通任务超时 · ${prefs.getInt("executionTimeoutSeconds", 120)} 秒") {
+            val value = formInput("5～3600 秒", prefs.getInt("executionTimeoutSeconds", 120).toString()).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER }
+            styledDialog("普通任务超时", "自动绑定可在各自执行策略中单独设置", { value }, { dialog -> listOf(
+                "取消" to { dialog.dismiss() }, "保存" to save@{
+                    val seconds = value.text.toString().toIntOrNull()
+                    if (seconds == null || seconds !in 5..3600) { value.error = "请输入 5～3600"; return@save }
+                    prefs.edit().putInt("executionTimeoutSeconds", seconds).apply(); dialog.dismiss(); showTab()
+                }
+            ) })
+        })
+        historyGroup.addView(settingsRow("执行历史保留 · ${ExecutionHistory.limit(this)} 次") { editExecutionHistoryLimit() })
+        historyGroup.addView(settingsRow("查看执行日志") { work({ root.logs() }) { showExecutionLogs(it.output) } })
+        historyGroup.addView(settingsRow("清理日志与记忆输入") { clearPrivateLogs() })
         deviceGroup.addView(text("Root 状态 · 已授权", 14f).apply { setPadding(dp(16), dp(12), dp(16), dp(12)) })
         deviceGroup.addView(settingsRow("重新检查 Root") { checkRoot() })
-        deviceGroup.addView(settingsRow("查看执行日志") { work({ root.logs() }) { showExecutionLogs(it.output) } })
         deviceGroup.addView(settingsRow("清理临时文件") {
             if (SessionState.running) message("暂时无法清理", "请在执行结束后清理临时文件。")
             else work({ root.cleanTmp() }) { message("清理临时文件", if (it.code == 0) "清理完成" else it.output) }
         })
-        area.addView(settingsHeading("反馈与项目"))
-        val projectGroup = settingsGroup()
-        area.addView(projectGroup)
         checkUpdateButton = settingsRow(if (checkingUpdate) "正在检查更新…" else "检查更新") { checkForUpdates() }.apply {
             isEnabled = !checkingUpdate
         }
@@ -2790,7 +3166,7 @@ class MainActivity : Activity() {
         if (checkingUpdate) return
         checkingUpdate = true
         checkUpdateButton?.apply { text = "正在检查更新…"; isEnabled = false }
-        val installed = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.4.1"
+        val installed = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.4.2"
         updateIo.execute {
             val result = runCatching { GitHubUpdateChecker.check() }
             runOnUiThread {
@@ -2872,6 +3248,22 @@ class MainActivity : Activity() {
     @Deprecated("SAF result")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 110) {
+            val manager = prefs.getString("moduleExportManager", null)?.takeIf { it.isNotBlank() }
+            prefs.edit().remove("moduleExportManager").apply()
+            val uri = data?.data
+            if (resultCode == RESULT_OK && uri != null) {
+                appPickerIo.execute {
+                    val result = runCatching {
+                        val bundle = BundledModule.read(this)
+                        (contentResolver.openOutputStream(uri, "wt") ?: error("无法写入安装包")).use { it.write(bundle.bytes) }
+                        bundle.fileName
+                    }
+                    runOnUiThread { if (!isDestroyed) result.fold({ openModuleManager(manager, uri, it) }, { message("模块保存失败", it.message ?: "请重试。") }) }
+                }
+            }
+            return
+        }
         if (requestCode !in 100..102 || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         val name = runCatching { displayName(uri) }.getOrElse {
@@ -2952,6 +3344,6 @@ class MainActivity : Activity() {
         browserIo.shutdown()
         startButtonHandler.removeCallbacks(startButtonRefresh)
         SessionState.unsubscribe(listener); terminalReady = false; terminal?.destroy()
-        io.shutdown(); updateIo.shutdownNow(); super.onDestroy()
+        io.shutdown(); updateIo.shutdownNow(); appPickerIo.shutdownNow(); super.onDestroy()
     }
 }

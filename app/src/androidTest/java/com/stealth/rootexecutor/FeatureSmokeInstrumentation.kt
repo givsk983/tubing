@@ -29,16 +29,122 @@ class FeatureSmokeInstrumentation : Instrumentation() {
     private var updatesOnly = false
     private var scrollingOnly = false
     private var browserPerformanceOnly = false
+    private var automationDiagnosticsOnly = false
+    private var automationRepairOnly = false
+    private var automationSafetyOnly = false
+    private var automationRecoveryOnly = false
+    private var moduleBundleOnly = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         cleanupFixtureId = arguments?.getString("cleanup_fixture_id")
         updatesOnly = arguments?.getString("updates_only") == "true"
         scrollingOnly = arguments?.getString("scrolling_only") == "true"
         browserPerformanceOnly = arguments?.getString("browser_performance_only") == "true"
+        automationDiagnosticsOnly = arguments?.getString("automation_diagnostics_only") == "true"
+        automationRepairOnly = arguments?.getString("automation_repair_only") == "true"
+        automationSafetyOnly = arguments?.getString("automation_safety_only") == "true"
+        automationRecoveryOnly = arguments?.getString("automation_recovery_only") == "true"
+        moduleBundleOnly = arguments?.getString("module_bundle_only") == "true"
         start()
     }
 
     override fun onStart() {
+        if (moduleBundleOnly) {
+            try {
+                val bundle = BundledModule.read(targetContext)
+                val entries = linkedSetOf<String>()
+                java.util.zip.ZipInputStream(bundle.bytes.inputStream()).use { zip ->
+                    while (true) {
+                        val entry = zip.nextEntry ?: break
+                        check('/' !in entry.name) { "模块 ZIP 多了一层目录" }
+                        entries.add(entry.name)
+                        if (entry.name.endsWith(".sh") || entry.name == "module.prop") check('\r' !in zip.readBytes().toString(Charsets.UTF_8))
+                    }
+                }
+                check(entries.containsAll(listOf("module.prop", "customize.sh", "service.sh", "supervisor.sh", "monitor.sh", "detection.sh", "action.sh", "skip_mount")))
+                val applications = targetContext.packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                    .map { it.activityInfo.packageName }.toSet()
+                check(applications.size > 1) { "应用查询范围不正确" }
+                val report = StringBuilder("Bundled module ${bundle.version}: ${entries.size} root entries, LF verified; ${applications.size} visible launcher apps\n")
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    val uri = BundledModule.exportDownloads(targetContext, bundle)
+                    check(targetContext.contentResolver.openInputStream(uri)!!.use { it.readBytes() }.contentEquals(bundle.bytes))
+                    check(BundledModule.exportDownloads(targetContext, bundle) == uri) { "重复导出不应创建重复安装包" }
+                    report.append("Download export byte match and URI reuse verified: $uri\n")
+                    for (pkg in listOf("com.topjohnwu.magisk", "me.weishu.kernelsu")) {
+                        val intent = BundledModule.managerIntent(targetContext, pkg, uri) ?: continue
+                        val resolved = targetContext.packageManager.resolveActivity(intent, 0)
+                        check(resolved?.activityInfo?.packageName == pkg)
+                        if (intent.action == Intent.ACTION_VIEW) check(intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0 && intent.clipData != null)
+                        report.append("Manager handoff resolved: $pkg -> ${resolved?.activityInfo?.name}; not launched\n")
+                    }
+                }
+                finish(Activity.RESULT_OK, Bundle().apply { putString("module_bundle", report.toString()) })
+            } catch (e: Throwable) {
+                finish(Activity.RESULT_CANCELED, Bundle().apply { putString("module_bundle_error", e.stackTraceToString()) })
+            }
+            return
+        }
+        if (automationRecoveryOnly) {
+            try { finish(Activity.RESULT_OK, Bundle().apply { putString("automation_recovery", AutomationSafetyChecks.monitorRecovery()) }) }
+            catch (e: Throwable) { finish(Activity.RESULT_CANCELED, Bundle().apply { putString("automation_recovery_error", e.message) }) }
+            return
+        }
+        if (automationSafetyOnly) {
+            try {
+                val checks = AutomationSafetyChecks.run(targetContext)
+                finish(Activity.RESULT_OK, Bundle().apply { putString("automation_safety", checks.joinToString("\n")) })
+            } catch (e: Throwable) {
+                finish(Activity.RESULT_CANCELED, Bundle().apply { putString("automation_safety_error", e.stackTraceToString()) })
+            }
+            return
+        }
+        if (automationRepairOnly) {
+            repairAutomationModule()
+            return
+        }
+        if (automationDiagnosticsOnly) {
+            val report = runCatching { RootExecutor().run("""
+                id
+                echo MODULE
+                cat /data/adb/modules/tubing_app_trigger/module.prop
+                cat /data/adb/modules/tubing_app_trigger/status.log
+                cat /data/adb/modules/tubing_app_trigger/last-trigger.log
+                cat /data/adb/modules/tubing_app_trigger/monitor-output.log
+                echo USER_QUERY
+                /system/bin/am get-current-user
+                echo USER_QUERY_REDIRECTED
+                /system/bin/am get-current-user </dev/null 2>&1
+                echo CMD_QUERY
+                /system/bin/cmd activity get-current-user </dev/null 2>&1
+                echo MODULE_STDIN_REPRO
+                /system/bin/sh -c '
+                  exec 0>/data/adb/modules/tubing_app_trigger/diagnostic.lock
+                  echo ORIGINAL
+                  /system/bin/am get-current-user 2>&1
+                  echo RESULT=${'$'}?
+                  echo DEVNULL
+                  /system/bin/am get-current-user </dev/null 2>&1
+                  echo RESULT=${'$'}?
+                  rm /data/adb/modules/tubing_app_trigger/diagnostic.lock
+                '
+                echo SELINUX
+                cat /proc/self/attr/current
+                echo SYSTEM_STATE
+                /system/bin/dumpsys power | grep mWakefulness
+                /system/bin/dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity'
+                echo MONITOR_CONTEXT
+                for p in ${'$'}(pidof sh); do
+                  tr '\000' ' ' < /proc/${'$'}p/cmdline | grep -q '/data/adb/modules/tubing_app_trigger/monitor.sh' || continue
+                  echo PID=${'$'}p
+                  cat /proc/${'$'}p/attr/current
+                  tr '\000' '\n' < /proc/${'$'}p/environ | grep -E '^(PATH|CLASSPATH|ANDROID_ROOT|ANDROID_DATA|ASH_STANDALONE|LD_LIBRARY_PATH|ANDROID_RUNTIME_ROOT|ANDROID_TZDATA_ROOT|ANDROID_ART_ROOT|ANDROID_I18N_ROOT)='
+                  ls -l /proc/${'$'}p/fd/0 /proc/${'$'}p/fd/1 /proc/${'$'}p/fd/2
+                done
+            """.trimIndent()).output }.getOrElse { "Diagnostics failed: ${it.message}" }
+            finish(Activity.RESULT_OK, Bundle().apply { putString("automation_diagnostics", report) })
+            return
+        }
         if (updatesOnly) { checkUpdates(); return }
         if (scrollingOnly) { checkBrowserScrolling(); return }
         if (browserPerformanceOnly) { checkBrowserPerformance(); return }
@@ -195,6 +301,46 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 (failure?.let { "FAILED: ${it.stackTraceToString()}" } ?: "ALL DEVICE CHECKS PASSED"))
         }
         finish(if (failure == null) Activity.RESULT_OK else Activity.RESULT_CANCELED, result)
+    }
+
+    /** Device repair uses only the module files embedded in this signed test APK. */
+    private fun repairAutomationModule() {
+        val staging = File(targetContext.cacheDir, "automation-repair-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            val names = listOf("monitor.sh", "detection.sh", "service.sh", "supervisor.sh", "action.sh", "customize.sh", "module.prop")
+            names.forEach { name -> context.assets.open(name).use { input -> File(staging, name).outputStream().use { input.copyTo(it) } } }
+            val root = RootExecutor()
+            val copies = names.joinToString("\n") { name ->
+                "cp ${root.quote(File(staging, name).absolutePath)} \"${'$'}d/.$name.updated\" && chmod ${if (name.endsWith(".sh")) "755" else "644"} \"${'$'}d/.$name.updated\" && mv -f \"${'$'}d/.$name.updated\" \"${'$'}d/$name\""
+            }
+            val result = root.run("""
+                set -eu
+                d=/data/adb/modules/tubing_app_trigger
+                [ -d "${'$'}d" ] && [ ! -L "${'$'}d" ]
+                [ ! -e "${'$'}d/disable" ] && [ ! -e "${'$'}d/remove" ]
+                if [ -f "${'$'}d/supervisor.pid" ]; then
+                  supervisor=${'$'}(cat "${'$'}d/supervisor.pid")
+                  case "${'$'}supervisor" in ''|*[!0-9]*) exit 1 ;; esac
+                  if [ -r "/proc/${'$'}supervisor/cmdline" ] && tr '\000' '\n' < "/proc/${'$'}supervisor/cmdline" | grep -Fxq "${'$'}d/supervisor.sh"; then kill "${'$'}supervisor"; fi
+                fi
+                $copies
+                pid=${'$'}(sed -n 's/^pid=//p' "${'$'}d/status.log" | head -n 1)
+                case "${'$'}pid" in ''|*[!0-9]*) echo 'Invalid old monitor PID'; exit 1 ;; esac
+                if [ -r "/proc/${'$'}pid/cmdline" ] && tr '\000' '\n' < "/proc/${'$'}pid/cmdline" | grep -Fxq "${'$'}d/monitor.sh"; then
+                  kill "${'$'}pid"
+                fi
+                sleep 5
+                /system/bin/sh "${'$'}d/service.sh" </dev/null >/dev/null 2>&1
+                sleep 6
+                cat "${'$'}d/module.prop"
+                cat "${'$'}d/status.log"
+                cat "${'$'}d/monitor-output.log"
+            """.trimIndent())
+            check(result.code == 0) { result.output }
+            finish(Activity.RESULT_OK, Bundle().apply { putString("automation_repair", result.output) })
+        } catch (e: Exception) {
+            finish(Activity.RESULT_CANCELED, Bundle().apply { putString("automation_repair_error", e.message) })
+        } finally { staging.deleteRecursively() }
     }
 
     private fun checkBrowserPerformance() {

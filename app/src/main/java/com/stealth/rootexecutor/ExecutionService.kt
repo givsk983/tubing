@@ -69,6 +69,13 @@ class ExecutionService : Service() {
         }
     }
     private val root = RootExecutor()
+    private val prompts = PromptBuffer()
+    private var expectedPrompts: List<String> = emptyList()
+    private var sendMode = InputSendMode.DELAY
+    @Volatile private var failureReason: String? = null
+    private var watchdog: Runnable? = null
+    @Volatile private var deliveredInputs = 0
+    private val sequenceProgress = Any()
     override fun onBind(intent: Intent?) = null
     override fun onCreate() { super.onCreate(); active = this }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -77,6 +84,16 @@ class ExecutionService : Service() {
         val kind = intent.getStringExtra("kind") ?: return START_NOT_STICKY
         val name = intent.getStringExtra("name") ?: return START_NOT_STICKY
         val inputSteps = intent.getStringArrayListExtra("inputSteps")?.toList() ?: emptyList()
+        expectedPrompts = intent.getStringArrayListExtra("inputPrompts")?.toList() ?: emptyList()
+        sendMode = InputSendMode.fromKey(intent.getStringExtra("inputSendMode"))
+        val sensitiveValues = intent.getStringArrayListExtra("sensitiveValues")?.toList() ?: emptyList()
+        val automationPackage = intent.getStringExtra("automationPackage")
+        val automationShortcut = intent.getStringExtra("automationShortcut") ?: ""
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        if (!prefs.getBoolean("privacyDefaultsV1", false)) prefs.edit().putBoolean("saveLogs", false).putBoolean("privacyDefaultsV1", true).commit()
+        val timeoutSeconds = intent.getIntExtra("timeoutSeconds", prefs.getInt("executionTimeoutSeconds", 120)).coerceIn(5, 3600)
+        val saveOutput = prefs.getBoolean("saveLogs", false) && sensitiveValues.isEmpty()
+        val redactor = SecretRedactor(sensitiveValues)
         val mode = ExecutionMode.fromKey(intent.getStringExtra("mode") ?: getSharedPreferences("settings", MODE_PRIVATE).getString("executionMode", "pipe"))
         SessionState.clear()
         SessionState.running = true
@@ -87,6 +104,9 @@ class ExecutionService : Service() {
         SessionState.trackInputHistory = intent.getBooleanExtra("trackInputHistory", true)
         SessionState.status = "正在运行 · ${mode.label}"
         stopping = false
+        failureReason = null
+        prompts.clear()
+        deliveredInputs = 0
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("execution", "脚本执行", NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -101,44 +121,82 @@ class ExecutionService : Service() {
         SessionState.executionId = token
         SessionState.kind = kind
         ExecutionHistory.start(this, ExecutionRecord(token, kind, name, mode.key, System.currentTimeMillis()))
+        watchdog = Runnable { if (SessionState.executionId == token && SessionState.running) failSession("任务超过 ${timeoutSeconds} 秒，已终止") }
+        main.postDelayed(watchdog!!, timeoutSeconds * 1000L)
         executor.execute {
             val log = File(cacheDir, "$token.log")
+            var writer: java.io.BufferedWriter? = null
             try {
+                check(sendMode.valid(inputSteps, expectedPrompts)) {
+                    "输入方案配置不完整，请补齐提示词或改用延时发送；未启动脚本"
+                }
+                cacheDir.listFiles()?.filter { it.name.matches(Regex("[a-f0-9-]+\\.log")) && System.currentTimeMillis() - it.lastModified() > 86_400_000 }?.forEach { it.delete() }
+                if (saveOutput) writer = log.bufferedWriter()
+                var logSize = 0
+                val outputLock = Any()
+                val display: (String) -> Unit = { text -> synchronized(outputLock) {
+                    val safe = redactor.accept(text)
+                    SessionState.output(safe)
+                    if (logSize < 131_072) {
+                        val chunk = safe.take(131_072 - logSize)
+                        writer?.write(chunk); writer?.flush(); logSize += chunk.length
+                    }
+                } }
+                val callback: (String) -> Unit = { text -> prompts.append(text); display(text) }
                 lease.acquire(10 * 60_000L)
                 main.postDelayed(renewWake, 5 * 60_000L)
                 val terminal: ExecutionSession = when (mode) {
-                    ExecutionMode.PIPE -> PipeSession(root, token)
+                    ExecutionMode.PIPE -> PipeSession(root, token).apply { onInputEcho = display }
                     ExecutionMode.PTY -> PtySession(root, token)
                 }
                 session = terminal
-                log.bufferedWriter().use { writer ->
-                    val callback: (String) -> Unit = { text -> synchronized(writer) { writer.write(text); writer.flush() }; SessionState.output(text) }
+                if (stopping) error("执行已取消")
+                callback("\u001b[36m[Tubing] 执行方式：${mode.label}\u001b[0m\r\n")
+                if (mode == ExecutionMode.PIPE) callback("[输入提示] 输入后按回车提交；方向键菜单请选择 PTY。\r\n")
+                if (automationPackage != null) {
+                    AppAutomation.requireForeground(this, automationPackage, automationShortcut, intent.getIntExtra("profileUser", 0))
+                    val blocked = AppAutomation.blocked(prefs, automationPackage)
+                    check(blocked == null) { blocked ?: "冷却中" }
                     if (stopping) error("执行已取消")
-                    callback("\u001b[36m[Tubing] 执行方式：${mode.label}\u001b[0m\r\n")
-                    if (mode == ExecutionMode.PIPE) callback("[输入提示] 输入后按回车提交；方向键菜单请选择 PTY。\r\n")
-                    val code = terminal.run(ManagedFile(kind, name, ""), callback)
-                    SessionState.exitCode = code
-                    SessionState.status = if (stopping) "已终止" else "已结束 · 退出码 $code"
-                    callback("\r\n[Tubing] ${SessionState.status}\r\n")
+                    AppAutomation.markAttempt(prefs, automationPackage)
                 }
+                if (stopping) error("执行已取消")
+                AppAutomation.status(this, "脚本已启动")
+                val code = terminal.run(ManagedFile(kind, name, ""), callback)
+                SessionState.exitCode = code
+                if (inputSteps.isNotEmpty() && synchronized(sequenceProgress) { deliveredInputs < inputSteps.size } && !stopping)
+                    failureReason = "脚本结束前输入方案未完成"
+                SessionState.status = failureReason ?: if (stopping) "已终止" else "已结束 · 退出码 $code"
+                callback("\r\n[Tubing] ${SessionState.status}\r\n")
             } catch (e: Throwable) {
                 SessionState.exitCode = null
-                SessionState.status = if (stopping) "已终止" else "执行失败"
-                val error = "\r\n${SessionState.status}：${e.message}\r\n"
+                val detail = if (sensitiveValues.isEmpty()) e.message?.take(160) else "敏感任务未完成，请检查配置、提示词或权限"
+                if (!stopping) failureReason = failureReason ?: detail ?: "执行失败"
+                SessionState.status = failureReason?.let { "执行失败 · $it" } ?: "已终止"
+                val error = "\r\n${SessionState.status}\r\n"
                 SessionState.output(error)
-                runCatching { log.appendText(error) }
+                runCatching { writer?.write(error) }
             } finally {
+                stopping = true
+                watchdog?.let { main.removeCallbacks(it) }; watchdog = null
+                val tail = redactor.finish()
+                if (tail.isNotEmpty()) SessionState.output(tail)
+                runCatching { writer?.close() }
+                prompts.clear()
                 ExecutionHistory.finish(this, token, SessionState.status, SessionState.exitCode)
+                AppAutomation.status(this, failureReason ?: SessionState.status,
+                    failed = failureReason != null || (SessionState.exitCode != null && SessionState.exitCode != 0))
                 main.removeCallbacks(renewWake)
                 if (lease.isHeld) lease.release()
                 try { session?.stop() } catch (_: Exception) { }
-                if (getSharedPreferences("settings", MODE_PRIVATE).getBoolean("saveLogs", true)) {
+                if (saveOutput && log.exists()) {
                     try {
                         val saved = root.saveSession(log, token)
                         if (saved.code != 0) SessionState.output("\r\n日志保存失败：${saved.output}\r\n")
                     } catch (e: Exception) { SessionState.output("\r\n日志保存失败：${e.message}\r\n") }
                 }
                 log.delete()
+                runCatching { root.pruneLogs() }
                 session = null
                 Handler(mainLooper).post {
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -165,27 +223,47 @@ class ExecutionService : Service() {
                 }
                 if (!SessionState.running || stopping) return@execute
                 check(sessionReady) { "等待脚本输入通道超时" }
-                SessionState.output("\r\n[快捷方式] 已加载 ${values.size} 项输入，准备自动提交。\r\n")
-                Thread.sleep(1_500)
+                check(sendMode.valid(values, expectedPrompts)) { "方案配置不完整" }
+                SessionState.output("\r\n[快捷方式] 已加载 ${values.size} 项输入 · ${sendMode.label}\r\n")
+                if (sendMode == InputSendMode.DELAY) Thread.sleep(InputSendMode.INITIAL_DELAY_MS)
                 values.forEachIndexed { index, value ->
+                    if (sendMode == InputSendMode.PROMPT) {
+                        val promptDeadline = SystemClock.elapsedRealtime() + 30_000
+                        while (SessionState.running && !stopping && !prompts.consume(expectedPrompts[index])) {
+                            check(SystemClock.elapsedRealtime() < promptDeadline) { "等待第 ${index + 1} 项提示超时，已停止任务" }
+                            Thread.sleep(50)
+                        }
+                    } else if (index > 0) {
+                        Thread.sleep(InputSendMode.BETWEEN_INPUTS_MS)
+                    }
                     if (!SessionState.running || stopping) return@execute
                     val current = session
                     if (current?.inputReady != true) {
-                        SessionState.output("\r\n[快捷方式] 输入通道未就绪，已停止发送后续输入。\r\n")
+                        failSession("输入通道已关闭，已停止任务")
                         return@execute
                     }
-                    current.send(value + "\r")
+                    synchronized(sequenceProgress) {
+                        if (stopping) return@execute
+                        current.send(value + "\r")
+                        deliveredInputs = index + 1
+                    }
                     SessionState.output("\r\n[快捷方式] 已提交输入 ${index + 1}/${values.size}\r\n")
-                    if (index + 1 < values.size) Thread.sleep(900)
                 }
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
             } catch (e: Exception) {
-                SessionState.output("\r\n输入方案发送失败：${e.message}\r\n")
+                failSession(e.message ?: "输入方案发送失败")
             }
         }
     }
     fun resize(cols: Int, rows: Int) { session?.resize(cols, rows) }
+    private fun failSession(reason: String) {
+        if (!SessionState.running || stopping) return
+        failureReason = reason
+        SessionState.output("\r\n[Tubing] $reason\r\n")
+        AppAutomation.status(this, reason, failed = true)
+        terminate()
+    }
     fun terminate() {
         if (stopping || !SessionState.running) return
         stopping = true
@@ -196,9 +274,10 @@ class ExecutionService : Service() {
     override fun onDestroy() {
         terminate()
         main.removeCallbacks(renewWake)
+        watchdog?.let { main.removeCallbacks(it) }
         if (active === this) active = null
         wake?.let { if (it.isHeld) it.release() }
-        executor.shutdown(); input.shutdown()
+        executor.shutdown(); input.shutdownNow()
         super.onDestroy()
     }
 }
