@@ -64,8 +64,15 @@ while [ ! -e "$MODDIR/disable" ] && [ ! -e "$MODDIR/remove" ]; do
   [ "$user" = 0 ] || { report_status 'Current user query failed or secondary user; backing off'; previous=; candidate=; interval=10; continue; }
   previous=$identity
   report_status "Dispatching binding: $pkg"
+  owner=com.stealth.rootexecutor
+  if [ -f "$CONFIG/owner" ]; then
+    owner=$(cat "$CONFIG/owner")
+    printf '%s\n' "$owner" | grep -Eq '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$' || {
+      report_status 'Invalid owner package: sync bindings again'; continue
+    }
+  fi
   result=$(timeout -s KILL 6 am start-foreground-service --user 0 \
-    -n com.stealth.rootexecutor/.AutomationService --es package "$pkg" --ei profileUser "$profile" </dev/null 2>&1)
+    -n "$owner/com.stealth.rootexecutor.AutomationService" --es package "$pkg" --ei profileUser "$profile" </dev/null 2>&1)
   # Bound output size: keep the latest dispatch for diagnostics, never script input.
   rc=$?
   printf '%s\n%.2048s\n' "$pkg" "$result" > "$MODDIR/last-trigger.log"

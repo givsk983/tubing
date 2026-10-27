@@ -105,8 +105,9 @@ internal object AppAutomation {
         return listOfNotNull(lines.firstOrNull(), label.takeIf { it.isNotEmpty() }).joinToString("\n")
     }
 
-    fun sync(root: RootExecutor, bindings: Map<String, String>): CommandResult {
+    fun sync(root: RootExecutor, bindings: Map<String, String>, ownerPackage: String = "com.stealth.rootexecutor"): CommandResult {
         require(bindings.keys.all(::validPackage))
+        require(validPackage(ownerPackage))
         val packages = if (bindings.isEmpty()) "" else bindings.keys.sorted().joinToString("\n", postfix = "\n")
         return root.runBounded("""
             set -eu
@@ -115,6 +116,9 @@ internal object AppAutomation {
             mkdir -p "${'$'}d"
             chmod 700 "${'$'}d"
             umask 077
+            owner=${'$'}(mktemp "${'$'}d/owner.XXXXXX")
+            printf %s ${root.quote(ownerPackage)} > "${'$'}owner"
+            mv -f "${'$'}owner" "${'$'}d/owner"
             t=${'$'}(mktemp "${'$'}d/packages.XXXXXX")
             printf %s ${root.quote(packages)} > "${'$'}t"
             mv -f "${'$'}t" "${'$'}d/packages"

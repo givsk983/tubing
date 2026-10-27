@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private val appPickerIo = Executors.newSingleThreadExecutor()
     private var exportingModule = false
     private var checkingUpdate = false
+    private var creatingPackage = false
     private var checkUpdateButton: Button? = null
     private val root = RootExecutor()
     private var browserDirectoryReader: (String) -> Pair<CommandResult, List<BrowserEntry>> = { root.browse(it) }
@@ -3033,7 +3034,7 @@ class MainActivity : Activity() {
             val saved = runCatching {
                 // Persist first: stale module configuration cannot execute a removed binding.
                 AppAutomation.save(prefs, bindings)
-                val result = AppAutomation.sync(root, bindings)
+                val result = AppAutomation.sync(root, bindings, packageName)
                 check(result.code == 0) { result.output.ifBlank { "Root 配置写入失败" } }
             }
             runOnUiThread {
@@ -3058,6 +3059,7 @@ class MainActivity : Activity() {
         val historyGroup = addGroup("日志与记录")
         val deviceGroup = addGroup("设备与维护")
         val projectGroup = addGroup("反馈与项目")
+        deviceGroup.addView(settingsRow("自定义包名") { showCustomPackage() })
         moduleGroup.addView(settingsRow("App 自动执行") { showAppAutomation() })
         fileGroup.addView(settingsRow("默认导入方式 · ${ImportSource.fromKey(prefs.getString("importSource", "ask")).label}") { chooseDefaultImportSource() })
         val quickHome = prefs.getBoolean("homeDefaultQuickInterface", prefs.getBoolean("quickInterface", false))
@@ -3162,11 +3164,67 @@ class MainActivity : Activity() {
         area.addView(text("Tubing ${packageManager.getPackageInfo(packageName, 0).versionName}\nRoot 交互终端", 12f, mutedColor()).apply { gravity = Gravity.CENTER })
         content.addView(ScrollView(this).apply { addView(area) }, FrameLayout.LayoutParams(-1, -1))
     }
+    private fun showCustomPackage() {
+        if (creatingPackage) { message("正在处理", "请等待当前副本生成或安装完成。"); return }
+        if (SessionState.running || SessionState.startGate.isPreparing()) {
+            message("请先结束任务", "执行结束后再生成自定义包名副本。"); return
+        }
+        val input = formInput("例如 com.example.tubing", prefs.getString("customPackageName", "") ?: "").apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            setSingleLine(true)
+        }
+        styledDialog("自定义包名", "当前包名：$packageName", { column().apply {
+            addView(text("生成并安装独立副本，原应用保留。新副本需要重新授权 Root，设置、输入方案和快捷方式需重新配置；脚本库仍共用。自动执行需在副本中重新绑定并同步，模块请更新至内置版本；最后同步的应用负责自动执行。", 13f))
+            addView(input)
+            addView(text("包名至少两段，以点分隔，每段以英文字母开头，仅含字母、数字和下划线。已有包名不会覆盖。副本使用本机生成的签名，后续官方 APK 无法直接覆盖副本。", 12f, mutedColor()))
+        } }, { dialog -> listOf("取消" to { dialog.dismiss() }, "生成副本" to generate@{
+            val target = input.text.toString().trim()
+            if (!PackageManifest.validName(target) || target == packageName) {
+                input.error = "请输入与当前应用不同的有效包名（最多 200 字符）"; return@generate
+            }
+            prefs.edit().putString("customPackageName", target).apply()
+            dialog.dismiss()
+            creatingPackage = true
+            Toast.makeText(this, "正在生成并校验副本…", Toast.LENGTH_LONG).show()
+            appPickerIo.execute {
+                val result = runCatching { CustomPackage.create(this, target) }
+                runOnUiThread {
+                    creatingPackage = false
+                    if (isDestroyed || isFinishing) { result.getOrNull()?.delete(); return@runOnUiThread }
+                    result.fold({ apk ->
+                        styledDialog("副本已生成", target, { text("点击安装后通过 Root 安装独立副本，原应用与数据保留。") },
+                            { confirm -> listOf("取消" to { apk.delete(); confirm.dismiss() }, "安装副本" to {
+                                confirm.dismiss(); creatingPackage = true
+                                Toast.makeText(this, "正在安装副本…", Toast.LENGTH_LONG).show()
+                                appPickerIo.execute {
+                                    val installed = runCatching { CustomPackage.install(root, apk, target) }
+                                    apk.delete()
+                                    runOnUiThread {
+                                        creatingPackage = false
+                                        if (!isDestroyed && !isFinishing) installed.fold({ report ->
+                                            if (report.code == 0 && report.output.lineSequence().any { it.trim() == "Success" }) {
+                                                styledDialog("安装成功", target, { text("可从桌面打开副本，或点击下方按钮。请为副本重新授权 Root。") },
+                                                    { done -> listOf("完成" to { done.dismiss() }, "打开副本" to {
+                                                        done.dismiss()
+                                                        runCatching { startActivity(Intent().setComponent(android.content.ComponentName(target, MainActivity::class.java.name))) }
+                                                            .onFailure { message("打开失败", "请从桌面打开新安装的副本。") }
+                                                    }) })
+                                            } else message("安装未完成", report.output.ifBlank { "Root 不可用或安装超时，请检查手机已安装的应用后重试。" })
+                                        }, { message("安装失败", it.message ?: "请检查 Root 授权后重试") })
+                                    }
+                                }
+                            }) }).apply { setOnCancelListener { apk.delete() } }
+                    }, { message("生成失败", it.message ?: "无法生成安装包，请重试") })
+                }
+            }
+        }) })
+    }
+
     private fun checkForUpdates() {
         if (checkingUpdate) return
         checkingUpdate = true
         checkUpdateButton?.apply { text = "正在检查更新…"; isEnabled = false }
-        val installed = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.4.2"
+        val installed = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.4.3"
         updateIo.execute {
             val result = runCatching { GitHubUpdateChecker.check() }
             runOnUiThread {

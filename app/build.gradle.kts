@@ -27,8 +27,8 @@ android {
         applicationId = "com.stealth.rootexecutor"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "1.4.2"
+        versionCode = 18
+        versionName = "1.4.3"
         testInstrumentationRunner = "com.stealth.rootexecutor.FeatureSmokeInstrumentation"
     }
     compileOptions {
@@ -45,6 +45,7 @@ android {
 tasks.named("preBuild") { dependsOn(bundleAutomationModule) }
 
 dependencies {
+    implementation("com.android.tools.build:apksig:8.7.3")
     implementation("net.java.dev.jna:jna:5.15.0@aar")
     testImplementation("junit:junit:4.13.2")
 }

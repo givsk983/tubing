@@ -1,6 +1,6 @@
 id=tubing_app_trigger
 name=Tubing App Trigger
-version=1.1.1
-versionCode=5
+version=1.1.2
+versionCode=6
 author=Tubing
 description=Run a configured Tubing shortcut when its bound app enters the foreground. Configure bindings in Tubing settings.
