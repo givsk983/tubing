@@ -1766,13 +1766,15 @@ class MainActivity : Activity() {
     }
 
     private fun launch(inputSteps: List<String> = emptyList(), trackInputHistory: Boolean = true,
-        inputPrompts: List<String> = emptyList(), sensitive: Boolean = false, sendMode: InputSendMode = InputSendMode.DELAY): Boolean {
+        inputPrompts: List<String> = emptyList(), sensitive: Boolean = false, sendMode: InputSendMode = InputSendMode.DELAY,
+        quickExecution: Boolean = false): Boolean {
         if (SessionState.running) { message("脚本正在运行", "请先结束当前会话。"); return false }
         val file = selected ?: run { chooseFile(); return false }
         if (!sendMode.valid(inputSteps, inputPrompts)) {
             message("方案配置不完整", "等待提示词模式需要为每项输入填写提示词，也可切换为延时发送。"); return false
         }
         if (!SessionState.startGate.tryStart(android.os.SystemClock.elapsedRealtime())) return false
+        QuickExecutionExit.cancel()
         synchronized(inputCaptureLock) {
             inputCaptureBuffer.clear(); skipNextLineFeed = false; skipEscapeSequence = 0; inputCaptureTrackable = true
         }
@@ -1782,6 +1784,7 @@ class MainActivity : Activity() {
         terminal?.evaluateJavascript("window.setMode(${JSONObject.quote(mode.key)})", null)
         return try {
             startForegroundService(Intent(this, ExecutionService::class.java).putExtra("kind", file.kind).putExtra("name", file.name).putExtra("mode", mode.key)
+                .putExtra(QuickExecutionExit.SHORTCUT, quickExecution)
                 .putExtra("rememberInput", !sensitive && remembersInput(file)).putExtra("trackInputHistory", !sensitive && trackInputHistory)
                 .putStringArrayListExtra("inputPrompts", ArrayList(inputPrompts))
                 .putExtra("inputSendMode", sendMode.key)
@@ -2236,7 +2239,7 @@ class MainActivity : Activity() {
             val preset = shortcut.presetName?.let { name -> readInputPresets(file).firstOrNull { it.name == name } }
             if (launch(preset?.steps ?: emptyList(), trackInputHistory = false,
                     inputPrompts = preset?.prompts ?: emptyList(), sensitive = preset?.sensitive ?: false,
-                    sendMode = preset?.sendMode ?: InputSendMode.DELAY)) watchQuickExecution(shortcut.name)
+                    sendMode = preset?.sendMode ?: InputSendMode.DELAY, quickExecution = true)) watchQuickExecution(shortcut.name)
             }
         }
     }
@@ -2247,6 +2250,7 @@ class MainActivity : Activity() {
             override fun run() {
                 if (isDestroyed) return
                 if (SessionState.running) { window.decorView.postDelayed(this, 250); return }
+                if (QuickExecutionExit.pending()) return
                 if (android.os.SystemClock.elapsedRealtime() - started < 500) { window.decorView.postDelayed(this, 250); return }
                 val code = SessionState.exitCode
                 val succeeded = code == 0
@@ -3059,6 +3063,17 @@ class MainActivity : Activity() {
         val historyGroup = addGroup("日志与记录")
         val deviceGroup = addGroup("设备与维护")
         val projectGroup = addGroup("反馈与项目")
+        executionGroup.addView(Switch(this).apply {
+            text = "快捷执行后自动关闭 App 后台"
+            setTextColor(this@MainActivity.foreground)
+            setPadding(dp(16), dp(12), dp(16), dp(12)); minimumHeight = dp(52)
+            isChecked = prefs.getBoolean(QuickExecutionExit.SETTING, false)
+            setOnCheckedChangeListener { _, enabled ->
+                prefs.edit().putBoolean(QuickExecutionExit.SETTING, enabled).apply()
+                if (!enabled) QuickExecutionExit.cancel()
+            }
+        })
+        executionGroup.addView(text("默认关闭。开启后，Start 或模块绑定的快捷任务结束（含失败、终止）并保存记录后，移除最近任务并结束 Tubing 后台。执行期间保持运行，普通执行不受影响。", 12f, mutedColor()))
         deviceGroup.addView(settingsRow("自定义包名") { showCustomPackage() })
         moduleGroup.addView(settingsRow("App 自动执行") { showAppAutomation() })
         fileGroup.addView(settingsRow("默认导入方式 · ${ImportSource.fromKey(prefs.getString("importSource", "ask")).label}") { chooseDefaultImportSource() })
@@ -3224,7 +3239,7 @@ class MainActivity : Activity() {
         if (checkingUpdate) return
         checkingUpdate = true
         checkUpdateButton?.apply { text = "正在检查更新…"; isEnabled = false }
-        val installed = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.4.3"
+        val installed = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.4.4"
         updateIo.execute {
             val result = runCatching { GitHubUpdateChecker.check() }
             runOnUiThread {

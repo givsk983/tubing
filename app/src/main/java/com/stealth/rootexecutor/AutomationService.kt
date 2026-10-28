@@ -36,6 +36,7 @@ class AutomationService : Service() {
             stopSelf(); return START_NOT_STICKY
         }
         AppAutomation.status(this, "正在检查绑定与前台状态")
+        QuickExecutionExit.cancel()
         preparing = true
         worker.execute {
             val resolved = runCatching { AppAutomation.resolve(this, pkg) }
@@ -47,6 +48,7 @@ class AutomationService : Service() {
                     check(AppAutomation.blocked(prefs, pkg) == null) { "绑定已进入冷却或单次启用已使用" }
                     if (!SessionState.running && SessionState.startGate.tryStart(SystemClock.elapsedRealtime())) {
                         startForegroundService(Intent(this, ExecutionService::class.java)
+                            .putExtra(QuickExecutionExit.SHORTCUT, true)
                             .putExtra("kind", plan.file.kind).putExtra("name", plan.file.name)
                             .putExtra("automationPackage", pkg).putExtra("automationShortcut", plan.shortcut)
                             .putExtra("profileUser", targetUser)

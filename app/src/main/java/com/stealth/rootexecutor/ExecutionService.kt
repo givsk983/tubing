@@ -83,6 +83,8 @@ class ExecutionService : Service() {
         if (SessionState.running || intent == null) return START_NOT_STICKY
         val kind = intent.getStringExtra("kind") ?: return START_NOT_STICKY
         val name = intent.getStringExtra("name") ?: return START_NOT_STICKY
+        QuickExecutionExit.cancel()
+        val quickExecution = intent.getBooleanExtra(QuickExecutionExit.SHORTCUT, false)
         val inputSteps = intent.getStringArrayListExtra("inputSteps")?.toList() ?: emptyList()
         expectedPrompts = intent.getStringArrayListExtra("inputPrompts")?.toList() ?: emptyList()
         sendMode = InputSendMode.fromKey(intent.getStringExtra("inputSendMode"))
@@ -200,6 +202,7 @@ class ExecutionService : Service() {
                 session = null
                 Handler(mainLooper).post {
                     stopForeground(STOP_FOREGROUND_REMOVE)
+                    QuickExecutionExit.complete(this, token, quickExecution)
                     SessionState.running = false
                     SessionState.output("")
                     stopSelf()
@@ -279,5 +282,6 @@ class ExecutionService : Service() {
         wake?.let { if (it.isHeld) it.release() }
         executor.shutdown(); input.shutdownNow()
         super.onDestroy()
+        QuickExecutionExit.afterServiceDestroyed(this)
     }
 }
