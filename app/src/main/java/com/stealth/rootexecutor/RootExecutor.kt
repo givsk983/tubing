@@ -252,6 +252,20 @@ class RootExecutor {
         """.trimIndent())
     }
 
+    /** Stage a private copy where PackageInstaller can read it; always clean it up. */
+    fun installApk(path: String): CommandResult {
+        require(validPath(path) && path.endsWith(".apk", true)) { "APK 路径无效" }
+        return runBounded("""
+            set -eu
+            [ -f ${quote(path)} ] || { echo 'APK 文件不存在'; exit 46; }
+            tmp=${'$'}(mktemp /data/local/tmp/tubing-install.XXXXXX)
+            trap 'rm -f "${'$'}tmp"' EXIT
+            cp -- ${quote(path)} "${'$'}tmp"
+            chmod 644 "${'$'}tmp"
+            pm install -r --user 0 "${'$'}tmp"
+        """.trimIndent(), 120)
+    }
+
     fun renamePath(path: String, newName: String): CommandResult {
         require(validPath(path) && path != "/") { "文件路径无效" }
         require(validLeafName(newName)) { "名称无效" }

@@ -110,7 +110,8 @@ class MainActivity : Activity() {
     private var favoritesSheet: FavoritesSheet? = null
     private var leftBrowserCaption: TextView? = null
     private var rightBrowserCaption: TextView? = null
-    private val accent = Color.rgb(40, 185, 207)
+    private val accent get() = palette.accent
+    private val palette get() = UiPalette.forTheme(dark)
     private val listener: (String) -> Unit = { chunk ->
         if (terminalReady) {
             terminal?.evaluateJavascript("window.setMode(${JSONObject.quote(SessionState.mode.key)});window.feed(${JSONObject.quote(chunk)})", null)
@@ -134,22 +135,26 @@ class MainActivity : Activity() {
             "dark" -> true; "light" -> false
             else -> resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
         }
-        background = Color.parseColor(if (dark) "#080d14" else "#edf2f6")
-        panel = Color.parseColor(if (dark) "#111b28" else "#ffffff")
-        foreground = Color.parseColor(if (dark) "#d9e7f5" else "#182b3e")
+        background = palette.background
+        panel = palette.surface
+        foreground = palette.text
     }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     private fun text(value: String, size: Float = 15f, color: Int = foreground) = TextView(this).apply {
-        text = value; textSize = size; setTextColor(color); setPadding(dp(4), dp(8), dp(4), dp(8))
+        text = value; textSize = size; setTextColor(color); setLineSpacing(dp(2).toFloat(), 1.08f); setPadding(dp(4), dp(8), dp(4), dp(8))
     }
     private fun button(label: String, action: () -> Unit) = Button(this).apply {
-        text = label; isAllCaps = false; setTextColor(accent); textSize = 13f
+        text = label; isAllCaps = false; setTextColor(android.content.res.ColorStateList(
+            arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+            intArrayOf(palette.muted, accent))); textSize = 13f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        setPadding(dp(12), dp(8), dp(12), dp(8))
         backgroundTintList = null
         stateListAnimator = null
         val surface = GradientDrawable().apply {
-            setColor(panel); cornerRadius = dp(10).toFloat()
-            setStroke(dp(1), if (dark) Color.rgb(61, 83, 105) else Color.rgb(171, 192, 207))
+            setColor(panel); cornerRadius = dp(14).toFloat()
+            setStroke(dp(1), palette.outline)
         }
         background = InsetDrawable(android.graphics.drawable.RippleDrawable(
             android.content.res.ColorStateList.valueOf(Color.argb(40, 40, 185, 207)), surface, null), dp(3))
@@ -212,7 +217,7 @@ class MainActivity : Activity() {
         prefs.edit().putBoolean("quickInterface", prefs.getBoolean("homeDefaultQuickInterface", false)).apply()
         page = base()
         val heading = FrameLayout(this)
-        heading.addView(text("Tubing", 27f, accent).apply { typeface = Typeface.MONOSPACE; gravity = Gravity.CENTER_VERTICAL },
+        heading.addView(text("Tubing", 27f, accent).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL); gravity = Gravity.CENTER_VERTICAL },
             FrameLayout.LayoutParams(-2, dp(58), Gravity.START or Gravity.CENTER_VERTICAL))
         startButton = createStartButton()
         heading.addView(startButton, FrameLayout.LayoutParams(-2, dp(48), Gravity.CENTER))
@@ -249,7 +254,10 @@ class MainActivity : Activity() {
         executionKeyBar = FrameLayout(this)
         page.addView(executionKeyBar, LinearLayout.LayoutParams(-1, -2))
         page.addView(interfaceModeBar, LinearLayout.LayoutParams(-1, dp(44)))
-        val nav = LinearLayout(this)
+        val nav = LinearLayout(this).apply {
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = GradientDrawable().apply { setColor(panel); cornerRadius = dp(20).toFloat() }
+        }
         listOf("文件执行", "文件管理", "设置").forEachIndexed { index, label ->
             nav.addView(button(label) { tab = index; showTab() }, LinearLayout.LayoutParams(0, dp(58), 1f))
         }
@@ -279,7 +287,17 @@ class MainActivity : Activity() {
         updateShortcutButton()
         startButton?.visibility = View.GONE
         shortcutButton?.visibility = View.GONE
-        for (i in 0..2) (nav.getChildAt(i) as Button).setTextColor(if (tab == i) accent else foreground)
+        for (i in 0..2) (nav.getChildAt(i) as Button).apply {
+            isSelected = tab == i
+            setTextColor(if (isSelected) accent else palette.muted)
+            typeface = Typeface.create(if (isSelected) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+            background = InsetDrawable(android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(Color.argb(32, 40, 185, 207)),
+                GradientDrawable().apply {
+                    setColor(if (isSelected) palette.selected else Color.TRANSPARENT)
+                    cornerRadius = dp(16).toFloat()
+                }, null), dp(3))
+        }
         when (tab) {
             0 -> if (!quick) executionPage() else {
                 terminalStatus = null
@@ -294,7 +312,7 @@ class MainActivity : Activity() {
     }
 
     private fun createStartButton(large: Boolean = false) = button("Start") { startQuickShortcut() }.apply {
-        setTextColor(Color.rgb(8, 25, 32))
+        setTextColor(if (dark) Color.rgb(8, 25, 32) else Color.WHITE)
         textSize = if (large) 26f else 18f
         typeface = Typeface.DEFAULT_BOLD
         setPadding(dp(22), 0, dp(22), 0)
@@ -509,7 +527,7 @@ class MainActivity : Activity() {
             alpha = if (canGoParent) 1f else 0.4f
         }, LinearLayout.LayoutParams(-1, -2))
         list.addView(View(this).apply {
-            setBackgroundColor(if (dark) Color.rgb(34, 47, 62) else Color.rgb(226, 233, 238))
+            setBackgroundColor(palette.outline)
         }, LinearLayout.LayoutParams(-1, dp(1)))
         if (filtered.isEmpty()) {
             if (browserLoading[if (left) 0 else 1]) {
@@ -563,6 +581,7 @@ class MainActivity : Activity() {
                     updateBrowserSelection()
                 } else if (entry.type == "d") navigateBrowser(left, entry.path)
                 else if (entry.type == "f" && entry.name.endsWith(".zip", true)) openZipBrowser(left, entry)
+                else if (entry.type == "f" && entry.name.endsWith(".apk", true)) installBrowserApk(entry)
                 else {
                     selection.selectOnly(entry.path)
                     updateBrowserSelection()
@@ -583,7 +602,7 @@ class MainActivity : Activity() {
                 true
             }
             list.addView(row)
-            list.addView(View(this).apply { setBackgroundColor(if (dark) Color.rgb(34, 47, 62) else Color.rgb(226, 233, 238)) }, LinearLayout.LayoutParams(-1, dp(1)))
+            list.addView(View(this).apply { setBackgroundColor(palette.outline) }, LinearLayout.LayoutParams(-1, dp(1)))
         }
         val scrollKey = "${if (left) "left" else "right"}\u0000${if (left) leftPath else rightPath}\u0000$query\u0000${prefs.getString(if (left) "leftBrowserSort" else "rightBrowserSort", "nameAsc")}"
         val savedOffset = browserScrollPositions[scrollKey] ?: 0
@@ -649,7 +668,7 @@ class MainActivity : Activity() {
             setPadding(dp(6), dp(6), dp(6), dp(6))
             background = GradientDrawable().apply {
                 setColor(panel); cornerRadius = dp(12).toFloat()
-                setStroke(dp(1), if (dark) Color.rgb(61, 83, 105) else Color.rgb(171, 192, 207))
+                setStroke(dp(1), palette.outline)
             }
         }
         val popup = PopupWindow(menu, dp(200), -2, true).apply {
@@ -938,6 +957,7 @@ class MainActivity : Activity() {
     private fun showEntryActions(left: Boolean, entry: BrowserEntry) {
         val actions = if (entry.type == "f" && entry.name.endsWith(".zip", true))
             arrayOf("复制到另一侧", "重命名", "删除", "解压 ZIP")
+            else if (entry.type == "f" && entry.name.endsWith(".apk", true)) arrayOf("复制到另一侧", "重命名", "删除", "安装 APK")
             else if (entry.type == "f") arrayOf("复制到另一侧", "重命名", "删除", "执行")
             else arrayOf("复制到另一侧", "重命名", "删除")
         AlertDialog.Builder(this).setTitle(entry.name).setItems(actions) { _, index ->
@@ -947,7 +967,11 @@ class MainActivity : Activity() {
                     work({ root.copyPath(entry.path, destination).also { check(it.code == 0) { it.output.ifBlank { "复制失败" } } } }) { refreshBrowsers() }
                 }
                 1 -> renameBrowserEntry(left, entry)
-                3 -> if (entry.name.endsWith(".zip", true)) showExtractZip(left, entry) else executeBrowserEntry(entry)
+                3 -> when {
+                    entry.name.endsWith(".apk", true) -> installBrowserApk(entry)
+                    entry.name.endsWith(".zip", true) -> showExtractZip(left, entry)
+                    else -> executeBrowserEntry(entry)
+                }
                 2 -> AlertDialog.Builder(this).setMessage(if (entry.type == "d") "删除文件夹“${entry.name}”及其全部内容？" else "删除文件“${entry.name}”？")
                     .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
                         work({ root.deletePath(entry.path, entry.type == "d").also { check(it.code == 0) { it.output.ifBlank { "删除失败" } } } }) { refreshBrowsers() }
@@ -967,15 +991,58 @@ class MainActivity : Activity() {
         }
     }
 
+    private var installingBrowserApk = false
+
+    private fun installBrowserApk(entry: BrowserEntry) {
+        if (installingBrowserApk) { message("正在安装", "请等待当前安装完成。"); return }
+        styledDialog("安装 APK", entry.name, {
+            text("通过 Root 安装此 APK；同包名且签名一致的应用将更新并保留数据。请确认文件来源可信。", 14f)
+        }, { dialog -> listOf("取消" to { dialog.dismiss() }, "安装" to {
+            dialog.dismiss()
+            if (!installingBrowserApk) {
+                installingBrowserApk = true
+                Toast.makeText(this, "正在安装 APK…", Toast.LENGTH_LONG).show()
+                appPickerIo.execute {
+                    val result = runCatching { root.installApk(entry.path) }
+                    runOnUiThread {
+                        installingBrowserApk = false
+                        if (!isDestroyed && !isFinishing) result.fold({ report ->
+                            val success = report.code == 0 && report.output.lineSequence().any { it.trim() == "Success" }
+                            message(if (success) "安装成功" else "安装未完成",
+                                if (success) entry.name else report.output.ifBlank { "安装失败或超时，请检查设备上的安装状态。" })
+                        }, { message("安装失败", it.message ?: "无法安装 APK") })
+                    }
+                }
+            }
+        }) })
+    }
+
     private fun renameBrowserEntry(left: Boolean, entry: BrowserEntry) {
-        val input = EditText(this).apply { setText(entry.name); setSelection(text.length) }
-        AlertDialog.Builder(this).setTitle("重命名").setView(input).setNegativeButton("取消", null)
-            .setPositiveButton("保存") { _, _ ->
-                work({ root.renamePath(entry.path, input.text.toString().trim()).also { check(it.code == 0) { it.output.ifBlank { "重命名失败" } } } }) {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            setText(entry.name)
+            val extension = if (entry.type == "f") entry.name.lastIndexOf('.') else -1
+            setSelection(0, if (extension > 0) extension else text.length)
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("重命名").setView(input)
+            .setNegativeButton("取消", null).setPositiveButton("保存", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = input.text.toString()
+                if (name == entry.name) { dialog.dismiss(); return@setOnClickListener }
+                if (name.isBlank() || name in setOf(".", "..") || name.contains('/') ||
+                    name.any { it.isISOControl() } || name.toByteArray(Charsets.UTF_8).size > 255) {
+                    input.error = "请输入有效名称（最多 255 字节，不能包含 / 或控制字符）"
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                work({ root.renamePath(entry.path, name).also { check(it.code == 0) { it.output.ifBlank { "重命名失败" } } } }) {
                     clearBrowserSelection(left)
                     refreshBrowsers()
                 }
-            }.show()
+            }
+        }
+        dialog.show()
     }
 
     private fun showExtractZip(left: Boolean, entry: BrowserEntry) {
@@ -1842,8 +1909,8 @@ class MainActivity : Activity() {
     private fun showQuickShortcuts() {
         val shortcuts = quickShortcuts()
         val activeName = activeQuickShortcut()?.name
-        val muted = Color.parseColor(if (dark) "#94a9bc" else "#536d82")
-        val outline = Color.parseColor(if (dark) "#3d5369" else "#abc0cf")
+        val muted = palette.muted
+        val outline = palette.outline
         val dialog = android.app.Dialog(this)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
         val body = column().apply {
@@ -1879,7 +1946,7 @@ class MainActivity : Activity() {
             val card = column().apply {
                 setPadding(dp(14), dp(12), dp(14), dp(12))
                 val surface = GradientDrawable().apply {
-                    setColor(if (active) Color.parseColor(if (dark) "#142c38" else "#e7f7fa") else this@MainActivity.background)
+                    setColor(if (active) palette.selected else this@MainActivity.background)
                     cornerRadius = dp(12).toFloat()
                     setStroke(dp(1), if (active) accent else outline)
                 }
@@ -1962,7 +2029,7 @@ class MainActivity : Activity() {
             setPadding(dp(20), dp(20), dp(20), dp(16))
             background = GradientDrawable().apply {
                 setColor(panel); cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), Color.parseColor(if (dark) "#3d5369" else "#abc0cf"))
+                setStroke(dp(1), palette.outline)
             }
         }
 
@@ -2038,7 +2105,7 @@ class MainActivity : Activity() {
                 setColor(this@MainActivity.background); cornerRadius = dp(10).toFloat(); setStroke(dp(1), stroke)
             }
             addState(intArrayOf(android.R.attr.state_focused), surface(accent))
-            addState(intArrayOf(), surface(Color.parseColor(if (dark) "#3d5369" else "#abc0cf")))
+            addState(intArrayOf(), surface(palette.outline))
         }
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) }
     }
@@ -2050,14 +2117,14 @@ class MainActivity : Activity() {
         ) })
     }
 
-    private fun mutedColor() = Color.parseColor(if (dark) "#94a9bc" else "#536d82")
+    private fun mutedColor() = palette.muted
 
     private fun dialogCard(active: Boolean = false) = column().apply {
         setPadding(dp(14), dp(12), dp(14), dp(12))
         background = GradientDrawable().apply {
-            setColor(if (active) Color.parseColor(if (dark) "#142c38" else "#e7f7fa") else this@MainActivity.background)
+            setColor(if (active) palette.selected else this@MainActivity.background)
             cornerRadius = dp(12).toFloat()
-            setStroke(dp(1), if (active) accent else Color.parseColor(if (dark) "#3d5369" else "#abc0cf"))
+            setStroke(dp(1), if (active) accent else palette.outline)
         }
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) }
     }
@@ -2718,7 +2785,7 @@ class MainActivity : Activity() {
 
     private fun settingsHeading(title: String) = text(title, 13f,
         if (dark) accent else Color.rgb(18, 112, 128)).apply {
-        setPadding(dp(8), dp(8), dp(8), dp(10))
+        setPadding(dp(12), dp(16), dp(12), dp(10))
         typeface = Typeface.DEFAULT_BOLD
         if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
     }
@@ -2727,7 +2794,7 @@ class MainActivity : Activity() {
         tag = "settingsGroup"
         setPadding(dp(1), dp(6), dp(1), dp(6))
         background = GradientDrawable().apply {
-            setColor(if (dark) panel else Color.rgb(223, 232, 239))
+            setColor(panel)
             cornerRadius = dp(16).toFloat()
         }
         clipToOutline = true
