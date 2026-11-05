@@ -4,6 +4,7 @@ package com.stealth.rootexecutor
 internal class BrowserSelection {
     private val paths = linkedSetOf<String>()
     val selectedPaths: Set<String> get() = paths.toSet()
+    operator fun contains(path: String) = path in paths
     var inSelectionMode = false
         private set
     private var rightSwipeAnchor: String? = null

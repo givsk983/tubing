@@ -4,12 +4,17 @@ import android.content.Context
 import android.os.Build
 import android.view.MotionEvent
 import android.view.ViewConfiguration
-import android.widget.ScrollView
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.widget.CheckBox
+import android.widget.ListView
 import kotlin.math.abs
 import kotlin.math.max
 
-/** Keep native fling/stretch physics while separating vertical scroll from row swipe selection. */
-internal class BrowserScrollView(context: Context, accent: Int, private val onInteraction: () -> Unit) : ScrollView(context) {
+internal data class BrowserListPosition(val index: Int, val top: Int)
+
+/** Recycle file rows while keeping native fling physics and independent horizontal selection. */
+internal class BrowserFileList(context: Context, accent: Int, private val onInteraction: () -> Unit) : ListView(context) {
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     private var startX = 0f
     private var startY = 0f
@@ -18,8 +23,7 @@ internal class BrowserScrollView(context: Context, accent: Int, private val onIn
 
     init {
         val density = resources.displayMetrics.density
-        isFillViewport = true
-        isSmoothScrollingEnabled = true
+        selector = ColorDrawable(Color.TRANSPARENT)
         overScrollMode = OVER_SCROLL_IF_CONTENT_SCROLLS
         isHorizontalScrollBarEnabled = false
         isVerticalScrollBarEnabled = true
@@ -76,12 +80,24 @@ internal class BrowserScrollView(context: Context, accent: Int, private val onIn
 
     override fun shouldDelayChildPressedState() = false
 
-    private fun resetDirectoryTransition() {
-        getChildAt(0)?.apply {
-            animate().cancel()
-            alpha = 1f
-            translationX = 0f
+    fun position() = BrowserListPosition(firstVisiblePosition, getChildAt(0)?.top ?: 0)
+
+    fun renderSelection(paths: Set<String>) {
+        for (index in 0 until childCount) {
+            val row = getChildAt(index)
+            val path = row.tag as? String ?: continue
+            val checked = path in paths
+            if (row.isActivated != checked) row.isActivated = checked
+            row.findViewWithTag<CheckBox>("importSelectable")?.let { box ->
+                if (box.isChecked != checked) box.isChecked = checked
+            }
         }
+    }
+
+    private fun resetDirectoryTransition() {
+        animate().cancel()
+        alpha = 1f
+        translationX = 0f
     }
 
     override fun onDetachedFromWindow() {

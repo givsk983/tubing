@@ -16,6 +16,8 @@ import android.util.Base64
 import android.view.*
 import android.webkit.*
 import android.widget.*
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.doOnLayout
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.Executors
@@ -37,6 +39,7 @@ class MainActivity : Activity() {
     private var browserPanes: LinearLayout? = null
     private val updateIo = Executors.newSingleThreadExecutor()
     private val appPickerIo = Executors.newSingleThreadExecutor()
+    private val filePickerIo = Executors.newSingleThreadExecutor()
     private var exportingModule = false
     private var checkingUpdate = false
     private var creatingPackage = false
@@ -45,6 +48,8 @@ class MainActivity : Activity() {
     private var browserDirectoryReader: (String) -> Pair<CommandResult, List<BrowserEntry>> = { root.browse(it) }
     private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
     private lateinit var page: LinearLayout
+    private lateinit var navigation: LiquidGlassNavigation
+    private lateinit var executionWorkspace: LinearLayout
     private lateinit var content: FrameLayout
     private var terminal: WebView? = null
     private var terminalReady = false
@@ -68,6 +73,7 @@ class MainActivity : Activity() {
     private var executionKeyBar: FrameLayout? = null
     private var inputHistoryButton: Button? = null
     private var inputMemoryButton: Button? = null
+    private var executionFilePicker: android.app.Dialog? = null
     private var modeSelector: Button? = null
     private var granted = false
     private var checking = false
@@ -93,12 +99,13 @@ class MainActivity : Activity() {
     private var rightBrowserQuery = ""
     private val leftSelection = BrowserSelection()
     private val rightSelection = BrowserSelection()
-    private val leftBrowserRows = mutableMapOf<String, View>()
-    private val rightBrowserRows = mutableMapOf<String, View>()
+    private val browserLists = arrayOfNulls<BrowserFileList>(2)
+    private var settingsScrollY = 0
+    private var aboutScrollY = 0
     private val displayedBrowserPaths = mutableMapOf<Boolean, String>()
     private val browserTransitionDirections = mutableMapOf<Boolean, Int>()
-    private val browserScrollPositions = object : LinkedHashMap<String, Int>(80, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?) = size > 80
+    private val browserScrollPositions = object : LinkedHashMap<String, BrowserListPosition>(80, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, BrowserListPosition>?) = size > 80
     }
     private var browserSelectionBar: LinearLayout? = null
     private var browserNavigationBar: LinearLayout? = null
@@ -164,21 +171,21 @@ class MainActivity : Activity() {
         val result = FavoritesSwipeLayout(this, { event ->
             val bar = browserBottomBar
             if (!granted || tab != 1 || bar == null || !bar.isShown) false else {
-                val barPosition = IntArray(2).also { bar.getLocationOnScreen(it) }
                 val pagePosition = IntArray(2).also { page.getLocationOnScreen(it) }
-                val y = event.y + pagePosition[1]
-                y >= barPosition[1] && y <= pagePosition[1] + page.height - page.paddingBottom
+                val bounds = android.graphics.Rect()
+                bar.getGlobalVisibleRect(bounds) && bounds.contains(
+                    (event.x + pagePosition[0]).toInt(), (event.y + pagePosition[1]).toInt())
             }
         }, { openFavorites(true) }).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), 0, dp(16), 0); setBackgroundColor(this@MainActivity.background)
+            setPadding(dp(16), 0, dp(16), dp(16)); setBackgroundColor(this@MainActivity.background)
         }
         setContentView(result)
         result.setOnApplyWindowInsetsListener { view, insets ->
-            if (Build.VERSION.SDK_INT >= 30) {
-                val bars = insets.getInsets(WindowInsets.Type.systemBars())
-                view.setPadding(dp(16) + bars.left, bars.top, dp(16) + bars.right, bars.bottom)
-            } else view.setPadding(dp(16), insets.systemWindowInsetTop, dp(16), insets.systemWindowInsetBottom)
+            val bars = WindowInsetsCompat.toWindowInsetsCompat(insets, view)
+                .getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            // Preserve a bottom margin even when the gesture handle is hidden.
+            view.setPadding(dp(16) + bars.left, bars.top, dp(16) + bars.right, maxOf(dp(16), bars.bottom))
             insets
         }
         result.requestApplyInsets()
@@ -224,8 +231,12 @@ class MainActivity : Activity() {
         shortcutButton = button(shortcutButtonLabel()) { showQuickShortcuts() }
         heading.addView(shortcutButton, FrameLayout.LayoutParams(-2, dp(48), Gravity.END or Gravity.CENTER_VERTICAL))
         page.addView(heading)
+        val stage = FrameLayout(this).apply { clipChildren = false }
+        executionWorkspace = column().apply { setBackgroundColor(this@MainActivity.background) }
+        stage.addView(executionWorkspace, FrameLayout.LayoutParams(-1, -1))
+        page.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
         content = FrameLayout(this)
-        page.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
+        executionWorkspace.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
         interfaceModeButton = button(interfaceModeLabel()) { chooseInterfaceMode() }.apply {
             textSize = 12f
             minHeight = 0
@@ -252,16 +263,15 @@ class MainActivity : Activity() {
             addView(interfaceModeButton, LinearLayout.LayoutParams(-2, dp(36)))
         }
         executionKeyBar = FrameLayout(this)
-        page.addView(executionKeyBar, LinearLayout.LayoutParams(-1, -2))
-        page.addView(interfaceModeBar, LinearLayout.LayoutParams(-1, dp(44)))
-        val nav = LinearLayout(this).apply {
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-            background = GradientDrawable().apply { setColor(panel); cornerRadius = dp(20).toFloat() }
-        }
-        listOf("文件执行", "文件管理", "设置").forEachIndexed { index, label ->
-            nav.addView(button(label) { tab = index; showTab() }, LinearLayout.LayoutParams(0, dp(58), 1f))
-        }
-        page.addView(nav); showTab()
+        executionWorkspace.addView(executionKeyBar, LinearLayout.LayoutParams(-1, -2))
+        executionWorkspace.addView(interfaceModeBar, LinearLayout.LayoutParams(-1, dp(44)))
+        val nav = LiquidGlassNavigation(this, dark) { index -> tab = index; showTab() }
+        navigation = nav
+        nav.backdropSource = executionWorkspace
+        stage.addView(nav, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
+            setMargins(dp(6), 0, dp(6), dp(14))
+        })
+        showTab()
     }
     private fun showTab() {
         if (!granted) return
@@ -272,7 +282,8 @@ class MainActivity : Activity() {
             leftSelection.clear(); rightSelection.clear()
         }
         content.removeAllViews()
-        val nav = page.getChildAt(page.childCount - 1) as LinearLayout
+        browserLists.fill(null)
+        val nav = navigation
         nav.visibility = if (quick) View.INVISIBLE else View.VISIBLE
         executionKeyBar?.removeAllViews()
         managePresetsButton?.visibility = if (quick) View.GONE else View.VISIBLE
@@ -281,23 +292,15 @@ class MainActivity : Activity() {
         interfaceModeBar?.visibility = if (tab == 0) View.VISIBLE else View.GONE
         interfaceModeButton?.text = interfaceModeLabel()
         val heading = page.getChildAt(0) as FrameLayout
-        heading.visibility = if (tab == 1 || quick) View.GONE else View.VISIBLE
+        heading.visibility = if (tab == 1 || tab == 3 || quick) View.GONE else View.VISIBLE
         startButton = heading.getChildAt(1) as Button
         shortcutButton = heading.getChildAt(2) as Button
         updateShortcutButton()
         startButton?.visibility = View.GONE
         shortcutButton?.visibility = View.GONE
-        for (i in 0..2) (nav.getChildAt(i) as Button).apply {
-            isSelected = tab == i
-            setTextColor(if (isSelected) accent else palette.muted)
-            typeface = Typeface.create(if (isSelected) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
-            background = InsetDrawable(android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(Color.argb(32, 40, 185, 207)),
-                GradientDrawable().apply {
-                    setColor(if (isSelected) palette.selected else Color.TRANSPARENT)
-                    cornerRadius = dp(16).toFloat()
-                }, null), dp(3))
-        }
+        executionWorkspace.setPadding(0, 0, 0, if (tab == 0 && !quick) dp(100) else 0)
+        content.setPadding(0, 0, 0, if (tab == 1) dp(100) else 0)
+        nav.select(tab)
         when (tab) {
             0 -> if (!quick) executionPage() else {
                 terminalStatus = null
@@ -307,7 +310,16 @@ class MainActivity : Activity() {
                 quickExecutionPage()
             }
             1 -> { fileManagerPage(); refreshBrowsers(invalidateCache = false) }
-            else -> settingsPage()
+            2 -> settingsPage()
+            3 -> aboutPage()
+        }
+        if (tab == 2) (content.getChildAt(0) as? ScrollView)?.apply {
+            setPadding(paddingLeft, paddingTop, paddingRight, dp(104))
+            clipToPadding = false
+            doOnLayout {
+                scrollTo(0, settingsScrollY)
+                setOnScrollChangeListener { _, _, y, _, _ -> settingsScrollY = y }
+            }
         }
     }
 
@@ -396,8 +408,6 @@ class MainActivity : Activity() {
 
     private fun fileManagerPage() {
         content.removeAllViews()
-        leftBrowserRows.clear()
-        rightBrowserRows.clear()
         val area = column()
         val title = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         title.addView(text(if (browserImportMode) "导入文件" else "文件管理", 21f), LinearLayout.LayoutParams(0, dp(48), 1f))
@@ -489,10 +499,13 @@ class MainActivity : Activity() {
         if (left) leftBrowserCaption = caption else rightBrowserCaption = caption
         pane.addView(caption)
         val pathLabel = text(if (left) leftPath else rightPath, 10f, mutedColor()).apply {
-            maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            minHeight = dp(48)
+            gravity = Gravity.CENTER_VERTICAL
             setOnClickListener { focusBrowser(left); editBrowserPath(left) }
         }
-        pane.addView(pathLabel, LinearLayout.LayoutParams(-1, dp(42)))
+        pane.addView(pathLabel, LinearLayout.LayoutParams(-1, -2))
         val query = if (left) leftBrowserQuery else rightBrowserQuery
         if (query.isNotEmpty()) pane.addView(button("搜索：$query · 清除") {
             focusBrowser(left)
@@ -502,19 +515,14 @@ class MainActivity : Activity() {
             textSize = 11f
             contentDescription = "清除当前栏搜索：$query"
         }, LinearLayout.LayoutParams(-1, -2))
-        val list = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            isClickable = true
-            setOnClickListener {
-                focusBrowser(left)
-            }
-        }
         val filtered = visibleBrowserEntries(left)
         val selection = browserSelection(left)
-        selection.retain(filtered.filter { !browserImportMode || it.type == "f" }.map { it.path })
+        val selectablePaths = filtered.filter { !browserImportMode || it.type == "f" }.map { it.path }
+        selection.retain(selectablePaths)
         val canGoParent = (if (left) leftPath else rightPath).trimEnd('/').isNotEmpty()
-        list.addView(LinearLayout(this).apply {
+        val parentRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(48)
             setPadding(dp(3), dp(3), dp(5), dp(3))
             background = browserRowBackground()
             addView(text("📁  ..", fontSize, this@MainActivity.foreground).apply {
@@ -525,117 +533,143 @@ class MainActivity : Activity() {
             setOnClickListener { focusBrowser(left); goParent(left) }
             isEnabled = canGoParent
             alpha = if (canGoParent) 1f else 0.4f
-        }, LinearLayout.LayoutParams(-1, -2))
-        list.addView(View(this).apply {
-            setBackgroundColor(palette.outline)
-        }, LinearLayout.LayoutParams(-1, dp(1)))
-        if (filtered.isEmpty()) {
-            if (browserLoading[if (left) 0 else 1]) {
-                list.addView(LinearLayout(this).apply {
+        }
+        val paneIndex = if (left) 0 else 1
+        val loading = browserLoading[paneIndex]
+        val statusRow = if (filtered.isEmpty()) {
+            if (loading) {
+                LinearLayout(this).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(4), dp(12), dp(4), dp(12))
                     addView(ProgressBar(this@MainActivity, null, android.R.attr.progressBarStyleSmall).apply {
                         indeterminateTintList = android.content.res.ColorStateList.valueOf(accent)
                     }, LinearLayout.LayoutParams(dp(20), dp(20)))
                     addView(text("正在读取目录…", 12f, mutedColor()))
-                })
-            } else list.addView(text(if (query.isEmpty()) "目录为空" else "没有匹配的文件或文件夹", fontSize, foreground))
-        }
-        filtered.forEach { entry ->
-            val isSelected = entry.path in selection.selectedPaths
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(3), dp(3), dp(5), dp(3))
-                background = browserRowBackground()
-                this.isSelected = isSelected
-            }
-            (if (left) leftBrowserRows else rightBrowserRows)[entry.path] = row
-            val icon = when { entry.type == "d" -> "📁"; entry.type == "l" -> "↪";
-                entry.name.endsWith(".zip", true) -> "📦"; entry.type == "f" -> "📄"; else -> "▪" }
-            if (browserImportMode && entry.type == "f") row.addView(CheckBox(this).apply {
-                tag = "importSelectable"
-                isChecked = isSelected
-                contentDescription = "选择 ${entry.name}"
-                buttonTintList = android.content.res.ColorStateList.valueOf(accent)
-                setPadding(0, 0, 0, 0)
-                setOnClickListener {
-                    focusBrowser(left)
-                    selection.toggle(entry.path)
-                    updateBrowserSelection()
                 }
-            }, LinearLayout.LayoutParams(dp(40), dp(48)))
-            row.addView(text("$icon  ${entry.name}", fontSize, foreground).apply {
-                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; setPadding(0, dp(3), 0, dp(1))
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            installBrowserSwipe(row, left, entry)
-            row.setOnClickListener {
-                activeBrowserLeft = left
-                if (browserImportMode && entry.type == "d") {
-                    navigateBrowser(left, entry.path)
-                } else if (browserImportMode && entry.type == "l") {
-                    Toast.makeText(this, "请选择普通文件，不能导入符号链接", Toast.LENGTH_SHORT).show()
-                } else if (browserImportMode && entry.name.endsWith(".zip", true)) {
-                    openZipBrowser(left, entry, importMode = true)
-                } else if (browserImportMode || selection.inSelectionMode) {
-                    selection.add(entry.path)
-                    updateBrowserSelection()
-                } else if (entry.type == "d") navigateBrowser(left, entry.path)
-                else if (entry.type == "f" && entry.name.endsWith(".zip", true)) openZipBrowser(left, entry)
-                else if (entry.type == "f" && entry.name.endsWith(".apk", true)) installBrowserApk(entry)
-                else {
-                    selection.selectOnly(entry.path)
-                    updateBrowserSelection()
+            } else text(if (query.isEmpty()) "目录为空" else "没有匹配的文件或文件夹", fontSize, foreground)
+        } else null
+        val list = BrowserFileList(this, accent) { focusBrowser(left) }.apply {
+            divider = android.graphics.drawable.ColorDrawable(palette.outline)
+            dividerHeight = dp(1)
+            adapter = object : BaseAdapter() {
+                override fun getCount() = maxOf(filtered.size, 1) + 1
+                override fun getItem(position: Int) = filtered.getOrNull(position - 1)
+                override fun getItemId(position: Int) = position.toLong()
+                override fun getViewTypeCount() = 4
+                override fun getItemViewType(position: Int) = when {
+                    position == 0 -> 0
+                    statusRow != null -> 1
+                    browserImportMode && filtered[position - 1].type == "f" -> 2
+                    else -> 3
+                }
+                override fun areAllItemsEnabled() = false
+                override fun isEnabled(position: Int) = if (position == 0) canGoParent else statusRow == null
+                override fun getView(position: Int, recycled: View?, parent: ViewGroup): View {
+                    if (position == 0) return parentRow
+                    if (statusRow != null) return statusRow
+                    return bindBrowserRow(left, filtered[position - 1], recycled as? LinearLayout, fontSize, selectablePaths)
                 }
             }
-            row.setOnLongClickListener {
-                focusBrowser(left)
-                if (browserImportMode) {
-                    if (entry.type == "f") {
-                        selection.add(entry.path)
-                        updateBrowserSelection()
-                    } else Toast.makeText(this, "请进入目录选择普通文件", Toast.LENGTH_SHORT).show()
-                } else if (selection.inSelectionMode) {
-                    selection.add(entry.path)
-                    updateBrowserSelection()
-                    showBrowserSelectionActions(left)
-                } else showEntryActions(left, entry)
-                true
-            }
-            list.addView(row)
-            list.addView(View(this).apply { setBackgroundColor(palette.outline) }, LinearLayout.LayoutParams(-1, dp(1)))
         }
+        browserLists[paneIndex] = list
         val scrollKey = "${if (left) "left" else "right"}\u0000${if (left) leftPath else rightPath}\u0000$query\u0000${prefs.getString(if (left) "leftBrowserSort" else "rightBrowserSort", "nameAsc")}"
-        val savedOffset = browserScrollPositions[scrollKey] ?: 0
-        val scroll = BrowserScrollView(this, accent) { focusBrowser(left) }.apply { addView(list) }
-        val motionStyle = browserTransitionStyle()
-        val animateDirectory = transition != 0 && android.animation.ValueAnimator.areAnimatorsEnabled()
-        if (animateDirectory) {
-            list.alpha = motionStyle.startAlpha
-            list.translationX = (transition * dp(motionStyle.distanceDp)).toFloat()
+        val savedPosition = browserScrollPositions[scrollKey]
+        if (!loading && savedPosition != null) {
+            list.setSelectionFromTop(savedPosition.index.coerceAtMost(list.count - 1), savedPosition.top)
         }
-        // Restore before the first draw, and only record offsets after the first layout.
-        var restored = false
-        scroll.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            override fun onGlobalLayout() {
-                scroll.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                scroll.scrollTo(0, savedOffset)
-                restored = true
-                browserScrollPositions[scrollKey] = scroll.scrollY
-                if (animateDirectory) list.animate()
-                    .alpha(1f).translationX(0f).setDuration(motionStyle.durationMs)
-                    .setInterpolator(android.view.animation.DecelerateInterpolator(motionStyle.deceleration)).start()
+        list.setOnScrollListener(object : AbsListView.OnScrollListener {
+            override fun onScrollStateChanged(view: AbsListView, state: Int) = Unit
+            override fun onScroll(view: AbsListView, first: Int, visible: Int, total: Int) {
+                if (!loading && visible > 0) browserScrollPositions[scrollKey] = list.position()
             }
         })
-        scroll.setOnScrollChangeListener { _, _, y, _, _ ->
-            if (restored) browserScrollPositions[scrollKey] = y
+        val motionStyle = browserTransitionStyle()
+        if (transition != 0 && android.animation.ValueAnimator.areAnimatorsEnabled()) {
+            list.alpha = motionStyle.startAlpha
+            list.translationX = (transition * dp(motionStyle.distanceDp)).toFloat()
+            list.animate().alpha(1f).translationX(0f).setDuration(motionStyle.durationMs)
+                .setInterpolator(android.view.animation.DecelerateInterpolator(motionStyle.deceleration)).start()
         }
-        pane.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        pane.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
         return pane
+    }
+
+    private fun bindBrowserRow(left: Boolean, entry: BrowserEntry, recycled: LinearLayout?, fontSize: Float,
+                               selectablePaths: List<String>): View {
+        val selection = browserSelection(left)
+        val row = recycled ?: LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(48)
+            setPadding(dp(3), dp(3), dp(5), dp(3))
+            background = browserRowBackground()
+            if (browserImportMode && entry.type == "f") addView(CheckBox(this@MainActivity).apply {
+                tag = "importSelectable"
+                buttonTintList = android.content.res.ColorStateList.valueOf(accent)
+                setPadding(0, 0, 0, 0)
+            }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            addView(text("", fontSize, this@MainActivity.foreground).apply {
+                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(0, dp(3), 0, dp(1))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        row.tag = entry.path
+        row.isActivated = entry.path in selection
+        row.findViewWithTag<CheckBox>("importSelectable")?.apply {
+            isChecked = row.isActivated
+            contentDescription = "选择 ${entry.name}"
+            setOnClickListener {
+                focusBrowser(left)
+                selection.toggle(entry.path)
+                updateBrowserSelection()
+            }
+        }
+        val icon = when {
+            entry.type == "d" -> "📁"
+            entry.type == "l" -> "↪"
+            entry.name.endsWith(".zip", true) -> "📦"
+            entry.type == "f" -> "📄"
+            else -> "▪"
+        }
+        (row.getChildAt(row.childCount - 1) as TextView).text = "$icon  ${entry.name}"
+        installBrowserSwipe(row, left, entry, selectablePaths)
+        row.setOnClickListener {
+            focusBrowser(left)
+            if (browserImportMode && entry.type == "d") {
+                navigateBrowser(left, entry.path)
+            } else if (browserImportMode && entry.type == "l") {
+                Toast.makeText(this, "请选择普通文件，不能导入符号链接", Toast.LENGTH_SHORT).show()
+            } else if (browserImportMode && entry.name.endsWith(".zip", true)) {
+                openZipBrowser(left, entry, importMode = true)
+            } else if (browserImportMode || selection.inSelectionMode) {
+                selection.add(entry.path)
+                updateBrowserSelection()
+            } else if (entry.type == "d") navigateBrowser(left, entry.path)
+            else if (entry.type == "f" && entry.name.endsWith(".zip", true)) openZipBrowser(left, entry)
+            else if (entry.type == "f" && entry.name.endsWith(".apk", true)) installBrowserApk(entry)
+            else {
+                selection.selectOnly(entry.path)
+                updateBrowserSelection()
+            }
+        }
+        row.setOnLongClickListener {
+            focusBrowser(left)
+            if (browserImportMode) {
+                if (entry.type == "f") {
+                    selection.add(entry.path)
+                    updateBrowserSelection()
+                } else Toast.makeText(this, "请进入目录选择普通文件", Toast.LENGTH_SHORT).show()
+            } else if (selection.inSelectionMode) {
+                selection.add(entry.path)
+                updateBrowserSelection()
+                showBrowserSelectionActions(left)
+            } else showEntryActions(left, entry)
+            true
+        }
+        return row
     }
 
     private fun browserRowBackground(): android.graphics.drawable.Drawable {
         val states = android.graphics.drawable.StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_selected), android.graphics.drawable.ColorDrawable(
+            addState(intArrayOf(android.R.attr.state_activated), android.graphics.drawable.ColorDrawable(
                 if (dark) Color.rgb(25, 64, 80) else Color.rgb(210, 239, 243)))
             addState(intArrayOf(), android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
         }
@@ -728,24 +762,15 @@ class MainActivity : Activity() {
     }
 
     private fun updateBrowserSelection() {
-        listOf(true, false).forEach { left ->
-            val selection = browserSelection(left)
-            val selectedPaths = selection.selectedPaths
-            (if (left) leftBrowserRows else rightBrowserRows).forEach { (path, row) ->
-                val checked = path in selectedPaths
-                if (row.isSelected != checked) row.isSelected = checked
-                row.findViewWithTag<CheckBox>("importSelectable")?.let { box ->
-                    if (box.isChecked != checked) box.isChecked = checked
-                }
-            }
-        }
+        browserLists[0]?.renderSelection(leftSelection.selectedPaths)
+        browserLists[1]?.renderSelection(rightSelection.selectedPaths)
         val selection = browserSelection(activeBrowserLeft)
         browserSelectionBar?.visibility = if (selection.inSelectionMode) View.VISIBLE else View.INVISIBLE
         browserNavigationBar?.visibility = if (selection.inSelectionMode) View.INVISIBLE else View.VISIBLE
         browserSelectionCount?.text = "${if (activeBrowserLeft) "左侧" else "右侧"}已选 ${selection.selectedPaths.size} 项"
     }
 
-    private fun installBrowserSwipe(row: View, left: Boolean, entry: BrowserEntry) {
+    private fun installBrowserSwipe(row: View, left: Boolean, entry: BrowserEntry, selectablePaths: List<String>) {
         val slop = ViewConfiguration.get(this).scaledTouchSlop
         val threshold = maxOf(dp(36), slop * 2)
         var startX = 0f
@@ -785,7 +810,7 @@ class MainActivity : Activity() {
                         view.cancelLongPress()
                         val delta = event.x - startX
                         if (horizontal && !cancelled && kotlin.math.abs(delta) >= threshold) {
-                            browserSelection(left).swipe(entry.path, delta > 0, selectableBrowserEntries(left).map { it.path })
+                            browserSelection(left).swipe(entry.path, delta > 0, selectablePaths)
                             updateBrowserSelection()
                         }
                         return@setOnTouchListener true
@@ -804,7 +829,6 @@ class MainActivity : Activity() {
         val panes = browserPanes ?: return
         if (tab != 1 || !panes.isAttachedToWindow) return
         val index = if (left) 0 else 2
-        (if (left) leftBrowserRows else rightBrowserRows).clear()
         panes.removeViewAt(index)
         panes.addView(browserPane(left), index, LinearLayout.LayoutParams(0, -1, 1f))
         updateBrowserSelection()
@@ -1791,12 +1815,15 @@ class MainActivity : Activity() {
         }, "Android")
         loadUrl("file:///android_asset/terminal/index.html?${if (dark) "dark" else "light"}")
     }
-    private fun chooseFile(afterSelection: () -> Unit = {}) = work({ root.list().let { (r, files) -> check(r.code == 0) { r.output }; files } }) { files ->
-        if (files.isEmpty()) message("暂无文件", "请先导入 SH 或 ELF 文件。")
-        else showExecutionFilePicker(files, afterSelection)
+    private fun chooseFile(afterSelection: () -> Unit = {}) {
+        if (executionFilePicker?.isShowing == true || isFinishing || isDestroyed) return
+        val picker = showExecutionFilePicker(null, afterSelection)
+        executionFilePicker = picker
+        picker.setOnDismissListener { if (executionFilePicker === picker) executionFilePicker = null }
     }
 
-    private fun showExecutionFilePicker(files: List<ManagedFile>, afterSelection: () -> Unit): android.app.Dialog {
+    private fun showExecutionFilePicker(initialFiles: List<ManagedFile>?, afterSelection: () -> Unit): android.app.Dialog {
+        var files = initialFiles ?: emptyList()
         var prefix = ""
         val listing = column()
         lateinit var dialog: android.app.Dialog
@@ -1820,7 +1847,7 @@ class MainActivity : Activity() {
             }
             if (folders.isEmpty() && programs.isEmpty()) listing.addView(text("暂无可执行程序。", 14f, mutedColor()))
         }
-        render()
+        if (initialFiles != null) render()
         dialog = styledDialog("选择执行文件", "点击项目进入目录，点击程序完成选择", { listing },
             { chooser -> listOf("取消" to { chooser.dismiss() }) })
         dialog.setOnKeyListener { _, code, event ->
@@ -1828,6 +1855,29 @@ class MainActivity : Activity() {
                 if (event.action == KeyEvent.ACTION_UP) { prefix = ExecutionLibrary.parent(prefix); render() }
                 true
             } else false
+        }
+        if (initialFiles == null) {
+            var reading = false
+            fun load() {
+                if (reading) return
+                reading = true
+                listing.removeAllViews()
+                listing.addView(ProgressBar(this), LinearLayout.LayoutParams(dp(32), dp(32)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+                listing.addView(text("正在读取脚本库…", 14f, mutedColor()).apply { gravity = Gravity.CENTER })
+                filePickerIo.execute {
+                    val result = runCatching { root.list().let { (status, entries) -> check(status.code == 0) { status.output }; entries } }
+                    runOnUiThread {
+                        reading = false
+                        if (isDestroyed || isFinishing || !dialog.isShowing) return@runOnUiThread
+                        result.fold({ entries -> files = entries; render() }, { error ->
+                            listing.removeAllViews()
+                            listing.addView(text(error.message ?: "无法读取脚本列表", 14f, mutedColor()))
+                            listing.addView(button("重试") { load() })
+                        })
+                    }
+                }
+            }
+            load()
         }
         return dialog
     }
@@ -2833,14 +2883,7 @@ class MainActivity : Activity() {
                     val policy = AppAutomation.policy(prefs, entry.key)
                     addView(optionCard(entry.value, "${entry.key}\n冷却 ${policy.cooldownSeconds} 秒 · 超时 ${policy.timeoutSeconds} 秒${if (policy.once) " · 单次启用" else ""}") {
                         dialog.dismiss()
-                        AlertDialog.Builder(this@MainActivity).setTitle(entry.value)
-                            .setItems(arrayOf("冷却 / 超时 / 单次启用", "重新启用并清除冷却", "删除绑定")) { _, item ->
-                                when (item) {
-                                    0 -> editAutomationPolicy(entry.key)
-                                    1 -> { AppAutomation.rearm(prefs, entry.key); showAppAutomation() }
-                                    2 -> saveAppAutomation(AppAutomation.bindings(prefs) - entry.key)
-                                }
-                            }.setNegativeButton("取消", null).show()
+                        showAutomationBindingActions(entry.key, entry.value)
                     })
                 }
             }
@@ -2856,6 +2899,23 @@ class MainActivity : Activity() {
                 install.text = if (report.contains("模块未安装")) "安装内置配套模块" else "安装 / 更新配套模块"
             } }
         }
+    }
+
+    private fun showAutomationBindingActions(pkg: String, name: String) {
+        styledDialog(name, pkg, { dialog -> column().apply {
+            addView(optionCard("执行策略", "设置冷却时间、任务超时与单次启用") {
+                dialog.dismiss(); editAutomationPolicy(pkg)
+            })
+            addView(optionCard("重新启用", "恢复此绑定，并立即清除冷却时间") {
+                dialog.dismiss(); AppAutomation.rearm(prefs, pkg); showAppAutomation()
+            })
+            addView(optionCard("删除绑定", "移除此 App 的自动执行，保留脚本和输入方案") {
+                dialog.dismiss()
+                styledDialog("删除绑定", name, { text("删除后，打开此 App 将不再触发自动执行。", 14f) },
+                    { confirm -> listOf("取消" to { confirm.dismiss(); showAppAutomation() },
+                        "删除" to { confirm.dismiss(); saveAppAutomation(AppAutomation.bindings(prefs) - pkg) }) })
+            })
+        } }, { dialog -> listOf("返回" to { dialog.dismiss(); showAppAutomation() }) })
     }
 
     private fun showModuleInstaller() {
@@ -3117,6 +3177,129 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun helpButton(title: String, explanation: String): View = FrameLayout(this).apply {
+        layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(6) }
+        contentDescription = "$title · 查看说明"
+        isFocusable = true
+        background = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(palette.selected), null,
+            GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) })
+        addView(text("?", 16f, accent).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 0)
+            includeFontPadding = false
+            typeface = Typeface.DEFAULT_BOLD
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL; setStroke(dp(1), accent); setColor(Color.TRANSPARENT)
+            }
+        }, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+        setOnClickListener { message(title, explanation) }
+    }
+
+    private fun aboutLinkRow(icon: Int, title: String, subtitle: String, iconColor: Int, action: () -> Unit): View = LinearLayout(this).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(84)
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        background = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(palette.selected), null,
+            android.graphics.drawable.ColorDrawable(Color.WHITE))
+        addView(ImageView(this@MainActivity).apply {
+            setImageResource(icon)
+            imageTintList = android.content.res.ColorStateList.valueOf(iconColor)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = GradientDrawable().apply { setColor(this@MainActivity.background); cornerRadius = dp(14).toFloat() }
+        }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        addView(column().apply {
+            setPadding(dp(16), 0, dp(8), 0)
+            addView(text(title, 16f).apply { typeface = Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, 0) })
+            addView(text(subtitle, 12f, mutedColor()).apply { setPadding(0, dp(5), 0, 0) })
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(text("›", 25f, mutedColor()).apply { setPadding(0, 0, 0, 0) })
+        contentDescription = "$title，$subtitle"
+        for (i in 0 until childCount) getChildAt(i).importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        isFocusable = true
+        setOnClickListener { action() }
+    }
+
+    private fun aboutPage() {
+        val area = column()
+        val hero = column().apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(20), dp(8), dp(20), dp(16))
+        }
+        hero.addView(ImageView(this).apply {
+            setImageResource(com.stealth.rootexecutor.R.drawable.ic_tubing)
+            contentDescription = "Tubing 软件图标"
+        }, LinearLayout.LayoutParams(dp(80), dp(80)))
+        hero.addView(text("Tubing", 28f).apply {
+            gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, dp(12), 0, dp(4))
+        })
+        val version = packageManager.getPackageInfo(packageName, 0).versionName ?: "—"
+        hero.addView(text("版本 $version", 13f, accent).apply { gravity = Gravity.CENTER })
+        hero.addView(text("Root 交互终端", 13f, mutedColor()).apply {
+            gravity = Gravity.CENTER; setPadding(0, dp(8), 0, 0)
+        })
+        area.addView(settingsHeading("当前设备"))
+        val device = settingsGroup()
+        fun detail(label: String, value: String) {
+            device.addView(column().apply {
+                setPadding(dp(16), dp(10), dp(16), dp(10))
+                addView(text(label, 12f, mutedColor()))
+                addView(text(value.ifBlank { "未知" }, 15f).apply {
+                    setPadding(0, dp(4), 0, 0); setTextIsSelectable(true)
+                })
+            })
+        }
+        detail("手机型号", "${Build.MANUFACTURER} ${Build.MODEL}")
+        detail("设备型号", Build.DEVICE)
+        detail("Android 版本", "Android ${Build.VERSION.RELEASE} · API ${Build.VERSION.SDK_INT}")
+        area.addView(device)
+        area.addView(settingsHeading("开发者"))
+        val developer = settingsGroup()
+        developer.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            addView(ImageView(this@MainActivity).apply {
+                setImageBitmap(android.graphics.BitmapFactory.decodeResource(resources,
+                    com.stealth.rootexecutor.R.drawable.yaga_avatar,
+                    android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }))
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                contentDescription = "Yaga 的头像"
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(panel) }
+                clipToOutline = true
+            }, LinearLayout.LayoutParams(dp(64), dp(64)))
+            addView(column().apply {
+                setPadding(dp(16), 0, 0, 0)
+                addView(text("Yaga", 21f).apply { typeface = Typeface.DEFAULT_BOLD })
+                addView(text("Tubing 开发者", 13f, mutedColor()).apply { setPadding(0, dp(4), 0, 0) })
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+        })
+        area.addView(developer)
+        area.addView(settingsHeading("项目与交流"))
+        area.addView(settingsGroup().apply {
+            addView(aboutLinkRow(com.stealth.rootexecutor.R.drawable.ic_github, "GitHub", "源码与版本发布 · 2 个仓库", this@MainActivity.foreground) {
+                styledDialog("GitHub 仓库", "选择要访问的仓库", { dialog -> column().apply {
+                    addView(optionCard("当前仓库", "givsk983/tubing · 源码与版本发布") {
+                        dialog.dismiss(); openExternalLink("https://github.com/givsk983/tubing")
+                    })
+                    addView(optionCard("旧仓库", "yunhe4550-design/Tubing · 账号申诉中") {
+                        dialog.dismiss(); openExternalLink("https://github.com/yunhe4550-design/Tubing")
+                    })
+                } }, { dialog -> listOf("关闭" to { dialog.dismiss() }) })
+            })
+            addView(View(this@MainActivity).apply {
+                setBackgroundColor(palette.outline); alpha = 0.55f
+            }, LinearLayout.LayoutParams(-1, dp(1)).apply { marginStart = dp(76); marginEnd = dp(16) })
+            addView(aboutLinkRow(com.stealth.rootexecutor.R.drawable.ic_telegram, "Telegram", "反馈频道 · @mbazhuan", Color.rgb(42, 171, 238)) {
+                openExternalLink("https://t.me/mbazhuan")
+            })
+        })
+        content.addView(AboutProfileLayout(this, hero, area, panel, aboutScrollY) { aboutScrollY = it },
+            FrameLayout.LayoutParams(-1, -1))
+    }
+
     private fun settingsPage() {
         val area = column()
         area.addView(text("设置", 25f).apply { setPadding(dp(4), dp(8), dp(4), dp(16)) })
@@ -3129,9 +3312,11 @@ class MainActivity : Activity() {
         val executionGroup = addGroup("终端与执行")
         val historyGroup = addGroup("日志与记录")
         val deviceGroup = addGroup("设备与维护")
-        val projectGroup = addGroup("反馈与项目")
-        executionGroup.addView(Switch(this).apply {
+        val projectGroup = addGroup("应用更新")
+        val quickExitRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        quickExitRow.addView(Switch(this).apply {
             text = "快捷执行后自动关闭 App 后台"
+            textSize = 14f
             setTextColor(this@MainActivity.foreground)
             setPadding(dp(16), dp(12), dp(16), dp(12)); minimumHeight = dp(52)
             isChecked = prefs.getBoolean(QuickExecutionExit.SETTING, false)
@@ -3139,8 +3324,10 @@ class MainActivity : Activity() {
                 prefs.edit().putBoolean(QuickExecutionExit.SETTING, enabled).apply()
                 if (!enabled) QuickExecutionExit.cancel()
             }
-        })
-        executionGroup.addView(text("默认关闭。开启后，Start 或模块绑定的快捷任务结束（含失败、终止）并保存记录后，移除最近任务并结束 Tubing 后台。执行期间保持运行，普通执行不受影响。", 12f, mutedColor()))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        quickExitRow.addView(helpButton("快捷执行后自动关闭 App 后台",
+            "默认关闭。开启后，Start 或模块绑定的快捷任务结束（含失败、终止），并完成记录保存及服务清理后，移除最近任务并结束 Tubing 后台。\n\n执行期间保持运行，普通执行不受影响。关闭开关或启动新任务会取消等待中的退出。"))
+        executionGroup.addView(quickExitRow)
         deviceGroup.addView(settingsRow("自定义包名") { showCustomPackage() })
         moduleGroup.addView(settingsRow("App 自动执行") { showAppAutomation() })
         fileGroup.addView(settingsRow("默认导入方式 · ${ImportSource.fromKey(prefs.getString("importSource", "ask")).label}") { chooseDefaultImportSource() })
@@ -3219,7 +3406,11 @@ class MainActivity : Activity() {
         historyGroup.addView(text("输出日志默认关闭；开启后单次最多约 512KB，保留 7 天、最多 20 份。", 12f, mutedColor()))
         executionGroup.addView(settingsRow("普通任务超时 · ${prefs.getInt("executionTimeoutSeconds", 120)} 秒") {
             val value = formInput("5～3600 秒", prefs.getInt("executionTimeoutSeconds", 120).toString()).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER }
-            styledDialog("普通任务超时", "自动绑定可在各自执行策略中单独设置", { value }, { dialog -> listOf(
+            styledDialog("普通任务超时", "限制单次任务的最长运行时间", { column().apply {
+                addView(text("默认 120 秒，可设置 5～3600 秒。从任务启动开始计时，包含等待输入的时间；超过时限仍未结束会自动终止，并记录超时结果。提前结束不受影响。", 14f))
+                addView(value)
+                addView(text("适用于普通执行及首页快捷执行。模块绑定的自动任务使用各自“执行策略”中的超时设置。需要长时间运行时，请适当调大此值。", 12f, mutedColor()))
+            } }, { dialog -> listOf(
                 "取消" to { dialog.dismiss() }, "保存" to save@{
                     val seconds = value.text.toString().toIntOrNull()
                     if (seconds == null || seconds !in 5..3600) { value.error = "请输入 5～3600"; return@save }
@@ -3240,10 +3431,6 @@ class MainActivity : Activity() {
             isEnabled = !checkingUpdate
         }
         projectGroup.addView(checkUpdateButton)
-        projectGroup.addView(settingsRow("反馈频道 · Telegram") { openExternalLink("https://t.me/mbazhuan") })
-        projectGroup.addView(settingsRow("GitHub 仓库") { openExternalLink("https://github.com/givsk983/tubing") })
-        projectGroup.addView(settingsRow("旧 GitHub 仓库（账号申诉中）") { openExternalLink("https://github.com/yunhe4550-design/Tubing") })
-        area.addView(text("Tubing ${packageManager.getPackageInfo(packageName, 0).versionName}\nRoot 交互终端", 12f, mutedColor()).apply { gravity = Gravity.CENTER })
         content.addView(ScrollView(this).apply { addView(area) }, FrameLayout.LayoutParams(-1, -1))
     }
     private fun showCustomPackage() {
@@ -3304,9 +3491,13 @@ class MainActivity : Activity() {
 
     private fun checkForUpdates() {
         if (checkingUpdate) return
+        val installed = packageManager.getPackageInfo(packageName, 0).versionName
+        if (installed == null) {
+            message("检查更新失败", "无法读取当前应用版本。")
+            return
+        }
         checkingUpdate = true
         checkUpdateButton?.apply { text = "正在检查更新…"; isEnabled = false }
-        val installed = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.4.4"
         updateIo.execute {
             val result = runCatching { GitHubUpdateChecker.check() }
             runOnUiThread {
@@ -3478,12 +3669,14 @@ class MainActivity : Activity() {
         }
     }
     override fun onDestroy() {
+        executionFilePicker?.dismiss()
+        executionFilePicker = null
         favoritesSheet?.closeImmediately()
         browserRequests.invalidateAll()
         browserReadTasks.forEach { it?.cancel(false) }
         browserIo.shutdown()
         startButtonHandler.removeCallbacks(startButtonRefresh)
         SessionState.unsubscribe(listener); terminalReady = false; terminal?.destroy()
-        io.shutdown(); updateIo.shutdownNow(); appPickerIo.shutdownNow(); super.onDestroy()
+        io.shutdown(); updateIo.shutdownNow(); appPickerIo.shutdownNow(); filePickerIo.shutdownNow(); super.onDestroy()
     }
 }

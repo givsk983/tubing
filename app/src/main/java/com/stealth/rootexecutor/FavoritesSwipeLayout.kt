@@ -7,7 +7,7 @@ import android.view.ViewConfiguration
 import android.widget.LinearLayout
 import kotlin.math.abs
 
-/** Intercept upward drags across both bottom rows, leaving normal button taps intact. */
+/** Intercept upward drags from the file manager action bar, leaving bottom tabs alone. */
 internal class FavoritesSwipeLayout(
     context: Context,
     private val canStart: (MotionEvent) -> Boolean,

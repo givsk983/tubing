@@ -43,6 +43,9 @@ internal object PackageManifest {
         val data = ByteArrayOutputStream()
         val offsets = IntArray(count)
         var changed = false
+        // These app-scoped AndroidX identifiers must be unique across installed copies.
+        val receiverPermission = "$old.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+        val startupAuthority = "$old.androidx-startup"
         fun length8(): Int {
             val first = b.get().toInt() and 255
             return if (first and 128 == 0) first else ((first and 127) shl 8) or (b.get().toInt() and 255)
@@ -62,7 +65,11 @@ internal object PackageManifest {
             val length = if (utf8) { length8(); length8() } else length16() * 2
             val bytes = ByteArray(length).also { b.get(it) }
             val value = bytes.toString(if (utf8) Charsets.UTF_8 else Charsets.UTF_16LE)
-            val updated = if (value == old) { changed = true; replacement } else value
+            val updated = when (value) {
+                old -> { changed = true; replacement }
+                receiverPermission, startupAuthority -> replacement + value.removePrefix(old)
+                else -> value
+            }
             offsets[index] = data.size()
             val encoded = updated.toByteArray(if (utf8) Charsets.UTF_8 else Charsets.UTF_16LE)
             if (utf8) { write8(updated.length); write8(encoded.size) }

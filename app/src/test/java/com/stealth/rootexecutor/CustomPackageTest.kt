@@ -34,14 +34,21 @@ class CustomPackageTest {
         listOf("com.example.tubing", "a.b", "Com.Example_123").forEach { assertTrue(it, PackageManifest.validName(it)) }
     }
 
-    @Test fun actualCompiledManifestRetainsComponentsPermissionsAndVersionAcrossRepeatedRenames() {
+    @Test fun actualCompiledManifestRenamesAppScopedPermissionsAndAuthorityButRetainsComponents() {
         val baseline = attributes(manifest())
         assertTrue(baseline.contains(Triple("activity", "name", "$original.MainActivity")))
+        val renamedAttributes = setOf(
+            Triple("manifest", "package", original),
+            Triple("permission", "name", "$original.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"),
+            Triple("uses-permission", "name", "$original.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"),
+            Triple("provider", "authorities", "$original.androidx-startup")
+        )
+        assertTrue(baseline.containsAll(renamedAttributes))
         var bytes = manifest()
         var previous = original
         listOf("a.b", "com.example." + "long".repeat(40), "org.other.app").forEach { target ->
             bytes = PackageManifest.rename(bytes, previous, target)
-            assertEquals(baseline.map { if (it == Triple("manifest", "package", original)) it.copy(third = target) else it }, attributes(bytes))
+            assertEquals(baseline.map { if (it in renamedAttributes) it.copy(third = target + it.third.removePrefix(original)) else it }, attributes(bytes))
             assertEquals(bytes.size, ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt(4))
             previous = target
         }

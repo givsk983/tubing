@@ -350,8 +350,9 @@ class FeatureSmokeInstrumentation : Instrumentation() {
         val childStarted = CountDownLatch(1)
         var activity: Activity? = null
         var requests: BrowserRequestTokens? = null
+        val fixture = File(targetContext.cacheDir, "browser-benchmark-${UUID.randomUUID()}")
         val result = runCatching {
-            val screen = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            val screen = launchMainActivity()
             activity = screen
             fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
             var ready = false
@@ -398,10 +399,20 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 navigate.invoke(screen, true, child)
                 loadingPaintMs = SystemClock.uptimeMillis() - start
                 check((field("browserLoading").get(screen) as BooleanArray)[0])
-                check(descendants(screen.window.decorView).filterIsInstance<TextView>().any { it.text == "正在读取目录…" })
                 check((field("browserPanes").get(screen) as ViewGroup).getChildAt(2) === otherPane)
             }
             check(childStarted.await(2, TimeUnit.SECONDS))
+            var loadingVisible = false
+            repeat(40) {
+                if (!loadingVisible) {
+                    onUi {
+                        loadingVisible = descendants(screen.window.decorView).filterIsInstance<TextView>()
+                            .any { it.text == "正在读取目录…" }
+                    }
+                    if (!loadingVisible) SystemClock.sleep(25)
+                }
+            }
+            check(loadingVisible) { "Loading row did not draw while the directory read was blocked" }
             onUi {
                 val start = SystemClock.uptimeMillis()
                 navigate.invoke(screen, true, parent)
@@ -428,11 +439,87 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 check((field("browserPanes").get(screen) as ViewGroup).getChildAt(2) === otherPane)
                 check(!requested.contains(other)) { "Navigation reread the other pane" }
             }
-            "Root scan samples: library ${libraryScanMs}ms, device ${deviceScanMs}ms.\nBrowser navigation UI preparation: uncached loading ${loadingPaintMs}ms, cached pane ${cachedPaintMs}ms; both updated before blocked reads completed. Other pane retained; stale child result ignored; cache refreshed in background.\n"
+            val timeoutStart = SystemClock.uptimeMillis()
+            val timeout = rootReader.runBounded("sleep 10", 1)
+            val timeoutMs = SystemClock.uptimeMillis() - timeoutStart
+            check(timeout.code in setOf(124, 137) && timeoutMs < 5_000) { "Root timeout failed: ${timeout.code}, ${timeoutMs}ms" }
+
+            check(fixture.mkdir())
+            val report = StringBuilder("Root scans: library ${libraryScanMs}ms, device ${deviceScanMs}ms. Forced timeout: code ${timeout.code}, ${timeoutMs}ms.\n")
+            report.appendLine("Navigation UI preparation: uncached loading ${loadingPaintMs}ms, cached pane ${cachedPaintMs}ms. Other pane retained; stale result ignored.")
+            onUi { field("browserDirectoryReader").set(screen, rootReader::browse) }
+            val decor = screen.window.decorView
+            val entriesField = field("leftEntries")
+            val paneField = field("browserPanes")
+            val selectionField = field("leftSelection")
+            val updateSelection = MainActivity::class.java.getDeclaredMethod("updateBrowserSelection").apply { isAccessible = true }
+            fun measurePreDraw(label: String, ready: () -> Boolean, action: () -> Unit): Long {
+                val firstDraw = CountDownLatch(1)
+                var firstDrawMs = 0L
+                lateinit var listener: android.view.ViewTreeObserver.OnPreDrawListener
+                onUi {
+                    val started = SystemClock.uptimeMillis()
+                    listener = android.view.ViewTreeObserver.OnPreDrawListener {
+                        if (ready()) {
+                            firstDrawMs = SystemClock.uptimeMillis() - started
+                            decor.viewTreeObserver.removeOnPreDrawListener(listener)
+                            firstDraw.countDown()
+                        }
+                        true
+                    }
+                    decor.viewTreeObserver.addOnPreDrawListener(listener)
+                    action()
+                }
+                try { check(firstDraw.await(15, TimeUnit.SECONDS)) { "$label did not reach pre-draw" } }
+                finally { onUi { decor.viewTreeObserver.removeOnPreDrawListener(listener) } }
+                return firstDrawMs
+            }
+            for (count in listOf(1_000, 5_000)) {
+                val directory = File(fixture, count.toString()).apply { check(mkdir()) }
+                val names = (0 until count).map { "测试文件 %05d.sh".format(it) }
+                names.forEach { check(File(directory, it).createNewFile()) }
+                val scanStartMs = SystemClock.uptimeMillis()
+                val (scan, entries) = rootReader.browse(directory.absolutePath)
+                val scanMs = SystemClock.uptimeMillis() - scanStartMs
+                check(scan.code == 0 && entries.map { it.name } == names) { "Incomplete $count-file scan: code ${scan.code}, ${entries.size} files" }
+                if (count == 5_000) check(scan.output.length > 262_144)
+
+                val firstDrawMs = measurePreDraw("$count-file navigation", { entriesField.get(screen) == entries }) {
+                    navigate.invoke(screen, true, directory.absolutePath)
+                }
+                lateinit var scroll: BrowserFileList
+                onUi {
+                    val panes = paneField.get(screen) as ViewGroup
+                    check(panes.getChildAt(2) === otherPane)
+                    scroll = descendants(panes.getChildAt(0)).filterIsInstance<BrowserFileList>().single()
+                    check(scroll.count == count + 1 && scroll.childCount in 1..100) { "File rows were not recycled" }
+                }
+                val scrollMs = measurePreDraw("$count-file scroll", { scroll.lastVisiblePosition == count }) {
+                    scroll.setSelection(count)
+                }
+                onUi {
+                    val selection = selectionField.get(screen) as BrowserSelection
+                    val paths = entries.map { it.path }
+                    val selectStarted = SystemClock.uptimeMillis()
+                    selection.swipe(paths.first(), true, paths)
+                    selection.swipe(paths.last(), true, paths)
+                    updateSelection.invoke(screen)
+                    val selectMs = SystemClock.uptimeMillis() - selectStarted
+                    check(selection.selectedPaths.size == count)
+                    check(scroll.getChildAt(scroll.childCount - 1).isActivated)
+                    report.appendLine("$count files: Root scan ${scanMs}ms, uncached navigation to pre-draw ${firstDrawMs}ms, scroll-to-end to pre-draw ${scrollMs}ms, range select and view update ${selectMs}ms.")
+                }
+                measurePreDraw("$count-file selection restore", { scroll.firstVisiblePosition == 0 }) {
+                    scroll.setSelection(0)
+                }
+                onUi { check(scroll.getChildAt(1).isActivated) { "Recycled row lost its selection state" } }
+            }
+            report.toString()
         }
         releaseReads.countDown()
         requests?.invalidateAll()
         activity?.let { screen -> onUi { screen.finish() } }
+        fixture.deleteRecursively()
         preferences.edit().apply {
             if (previousRecents == null) remove("recentBrowserDirectories") else putString("recentBrowserDirectories", previousRecents)
         }.commit()
@@ -444,7 +531,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
     private fun checkBrowserScrolling() {
         var activity: Activity? = null
         val result = runCatching {
-            val screen = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            val screen = launchMainActivity()
             activity = screen
             fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
             var ready = false
@@ -467,27 +554,29 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 render.invoke(screen)
             }
             SystemClock.sleep(200)
-            fun panes() = descendants(screen.window.decorView).filterIsInstance<BrowserScrollView>()
-            var left: BrowserScrollView? = null
-            var leftOffset = 0
-            var rightOffset = 0
+            fun panes() = descendants(screen.window.decorView).filterIsInstance<BrowserFileList>()
+            lateinit var left: BrowserFileList
+            var leftOffset = BrowserListPosition(0, 0)
+            var rightOffset = BrowserListPosition(0, 0)
             onUi {
                 val scrolls = panes()
                 check(scrolls.size == 2)
-                left = scrolls[0]
-                scrolls[0].scrollTo(0, 420)
-                scrolls[1].scrollTo(0, 630)
-                leftOffset = scrolls[0].scrollY
-                rightOffset = scrolls[1].scrollY
-                check(leftOffset > 0 && rightOffset > 0)
+                scrolls[0].setSelectionFromTop(5, -18)
+                scrolls[1].setSelectionFromTop(8, -26)
+            }
+            SystemClock.sleep(200)
+            onUi {
+                leftOffset = panes()[0].position()
+                rightOffset = panes()[1].position()
+                check(leftOffset.index == 5 && rightOffset.index == 8)
                 render.invoke(screen)
             }
             SystemClock.sleep(200)
             onUi {
-                check(panes()[0].scrollY == leftOffset && panes()[1].scrollY == rightOffset) { "Pane offsets lost on rebuild" }
+                check(panes()[0].position() == leftOffset && panes()[1].position() == rightOffset) { "Pane offsets lost on rebuild" }
                 left = panes()[0]
             }
-            val scroll = checkNotNull(left)
+            val scroll = left
             fun gesture(horizontal: Boolean) {
                 val downTime = SystemClock.uptimeMillis()
                 val startX = scroll.width * if (horizontal) 0.2f else 0.5f
@@ -510,7 +599,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             gesture(false)
             SystemClock.sleep(120)
             onUi {
-                check(scroll.scrollY > leftOffset) { "Vertical swipe did not scroll" }
+                check(scroll.position().index > leftOffset.index) { "Vertical swipe did not scroll" }
                 check((field("leftSelection").get(screen) as BrowserSelection).selectedPaths.isEmpty()) { "Vertical scroll selected a file" }
                 // Stop inertia with a tap; this must not become a file click.
                 val now = SystemClock.uptimeMillis()
@@ -525,7 +614,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             gesture(true)
             onUi {
                 check((field("leftSelection").get(screen) as BrowserSelection).selectedPaths.size == 1) { "Horizontal swipe did not select one file" }
-                check(panes()[1].scrollY == rightOffset) { "Other pane moved" }
+                check(panes()[1].position() == rightOffset) { "Other pane moved" }
             }
             var navigation: ViewGroup? = null
             onUi {
@@ -562,16 +651,17 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             dragEvent(MotionEvent.ACTION_CANCEL, 128 * density)
             SystemClock.sleep(280)
             onUi { check(sheet() == null) { "Cancelled drag left the sheet open" } }
-            listOf("文件执行", "文件管理", "设置").forEach { label ->
-                onUi { gestureOrigin = descendants(screen.window.decorView).filterIsInstance<Button>().first { it.text == label } }
+            // Bottom navigation now owns its gestures; upward drift must not open favorites.
+            onUi { gestureOrigin = field("navigation").get(screen) as View }
+            repeat(3) {
                 dragEvent(MotionEvent.ACTION_DOWN, 0f)
                 dragEvent(MotionEvent.ACTION_MOVE, 48 * density)
                 SystemClock.sleep(80)
-                onUi { check(checkNotNull(sheet()).revealFraction > 0f) { "Bottom tab $label did not reveal sheet" } }
+                onUi { check(sheet() == null) { "Glass navigation drag opened favorites" } }
                 dragEvent(MotionEvent.ACTION_CANCEL, 48 * density)
-                SystemClock.sleep(250)
-                onUi { check(sheet() == null && field("tab").getInt(screen) == 1) { "Swipe triggered tab $label" } }
+                onUi { check(field("tab").getInt(screen) == 1) { "Cancelled glass drag changed tab" } }
             }
+            onUi { gestureOrigin = nav }
             dragEvent(MotionEvent.ACTION_DOWN, 0f)
             dragEvent(MotionEvent.ACTION_MOVE, 48 * density)
             SystemClock.sleep(80)
@@ -593,10 +683,53 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 check(sheet() == null)
                 check(field("leftPath").get(screen) == "/scroll-fixture/left") { "Back navigated behind the sheet" }
             }
+            onUi { gestureOrigin = field("navigation").get(screen) as View }
             dragEvent(MotionEvent.ACTION_DOWN, 0f)
             dragEvent(MotionEvent.ACTION_UP, 0f)
             onUi { check(field("tab").getInt(screen) == 2) { "Normal Settings tap stopped working" } }
-            "Browser scrolling and favorites sheet: pane offsets, vertical drag, fling stop, horizontal selection passed; both bottom rows and all three tabs reveal the sheet without switching tabs, drag/cancel/settle/Back pass, and normal Settings tap still works.\n"
+            // The picker must appear synchronously even while the shared I/O queue is busy.
+            val releaseIo = CountDownLatch(1)
+            val ioStarted = CountDownLatch(1)
+            val sharedIo = field("io").get(screen) as java.util.concurrent.ExecutorService
+            sharedIo.execute { ioStarted.countDown(); releaseIo.await(15, TimeUnit.SECONDS) }
+            check(ioStarted.await(5, TimeUnit.SECONDS))
+            try {
+                val choose = MainActivity::class.java.declaredMethods.first { it.name == "chooseFile" }.apply { isAccessible = true }
+                val callback: () -> Unit = {}
+                onUi {
+                    choose.invoke(screen, callback)
+                    val picker = field("executionFilePicker").get(screen) as Dialog
+                    check(picker.isShowing) { "Picker waited for Root/shared I/O before opening" }
+                    repeat(10) { choose.invoke(screen, callback) }
+                    check(field("executionFilePicker").get(screen) === picker) { "Repeated click opened a duplicate picker" }
+                    picker.dismiss()
+                }
+                (field("filePickerIo").get(screen) as java.util.concurrent.ExecutorService).submit {}.get(20, TimeUnit.SECONDS)
+                onUi { check(field("executionFilePicker").get(screen) == null) { "Closed picker reopened on late read" } }
+            } finally { releaseIo.countDown() }
+            val showTab = MainActivity::class.java.getDeclaredMethod("showTab").apply { isAccessible = true }
+            fun changeTab(index: Int) { field("tab").setInt(screen, index); showTab.invoke(screen) }
+            fun pageScroller() = descendants(field("content").get(screen) as View).filterIsInstance<ScrollView>().single()
+            var settingsY = 0
+            var aboutY = 0
+            onUi {
+                pageScroller().scrollTo(0, 400)
+                settingsY = pageScroller().scrollY
+                check(settingsY > 0)
+                changeTab(3)
+            }
+            SystemClock.sleep(200)
+            onUi {
+                pageScroller().scrollTo(0, 280)
+                aboutY = pageScroller().scrollY
+                check(aboutY > 0)
+                changeTab(2)
+            }
+            SystemClock.sleep(200)
+            onUi { check(pageScroller().scrollY == settingsY); changeTab(3) }
+            SystemClock.sleep(200)
+            onUi { check(pageScroller().scrollY == aboutY) }
+            "Browser and favorites: independent offsets, vertical drag, fling stop, horizontal selection, gesture ownership and Back passed. Picker opened during busy I/O with no duplicates. Settings and About restored their scroll positions.\n"
         }
         activity?.let { screen -> onUi { screen.finish() } }
         finish(if (result.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
@@ -627,6 +760,15 @@ class FeatureSmokeInstrumentation : Instrumentation() {
         finish(if (result.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
             putString("stream", result.getOrElse { it.stackTraceToString() })
         })
+    }
+
+    private fun launchMainActivity(): Activity {
+        // Do not wait for global UI idleness: the live glass continuously redraws.
+        val monitor = addMonitor(MainActivity::class.java.name, null, false)
+        try {
+            targetContext.startActivity(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            return checkNotNull(monitor.waitForActivityWithTimeout(10_000)) { "Activity launch timed out" }
+        } finally { removeMonitor(monitor) }
     }
 
     private fun onUi(action: () -> Unit) {
@@ -673,7 +815,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
     private fun checkImportCheckbox(fixture: File, projectName: String, checks: MutableList<String>) {
         val preferences = targetContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
         val previousRecents = preferences.getString("recentBrowserDirectories", null)
-        val activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val activity = launchMainActivity()
         try {
             var ready = false
             repeat(50) {
@@ -691,11 +833,23 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 MainActivity::class.java.getDeclaredMethod("refreshBrowsers", Boolean::class.javaPrimitiveType).apply { isAccessible = true }.invoke(activity, true)
             }
             var checkbox: CheckBox? = null
+            var scrolledToZip = false
             repeat(50) {
                 if (checkbox == null) {
                     onUi {
-                        checkbox = descendants(activity.window.decorView).filterIsInstance<CheckBox>().firstOrNull {
+                        val list = descendants(activity.window.decorView).filterIsInstance<BrowserFileList>().getOrNull(1)
+                            ?: return@onUi
+                        checkbox = descendants(list).filterIsInstance<CheckBox>().firstOrNull {
                             it.contentDescription == "选择 完整项目.zip"
+                        }
+                        if (checkbox == null && !scrolledToZip) {
+                            val position = (1 until list.count).firstOrNull {
+                                (list.getItemAtPosition(it) as? BrowserEntry)?.name == "完整项目.zip"
+                            }
+                            if (position != null) {
+                                list.setSelection(position)
+                                scrolledToZip = true
+                            }
                         }
                     }
                     if (checkbox == null) SystemClock.sleep(100)
@@ -706,7 +860,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             var originalHeight = 0
             var originalTop = 0
             onUi {
-                val scroll = box.parent.parent.parent as ScrollView
+                val scroll = box.parent.parent as BrowserFileList
                 originalHeight = scroll.height
                 originalTop = IntArray(2).also { scroll.getLocationOnScreen(it) }[1]
                 box.performClick()
@@ -715,7 +869,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             onUi {
                 val selection = MainActivity::class.java.getDeclaredField("rightSelection").apply { isAccessible = true }.get(activity) as BrowserSelection
                 check(box.isChecked && File(fixture, "完整项目.zip").absolutePath in selection.selectedPaths)
-                val scroll = box.parent.parent.parent as ScrollView
+                val scroll = box.parent.parent as BrowserFileList
                 check(scroll.height == originalHeight && IntArray(2).also { scroll.getLocationOnScreen(it) }[1] == originalTop)
                 box.performClick()
                 check(!box.isChecked && selection.selectedPaths.isEmpty())

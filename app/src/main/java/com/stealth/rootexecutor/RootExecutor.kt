@@ -24,24 +24,40 @@ class RootExecutor {
     }
 
     /** Bounded Root setup/query, including su authorization and output drain. */
-    fun runBounded(command: String, seconds: Long = 10): CommandResult {
+    fun runBounded(command: String, seconds: Long = 10): CommandResult = runBounded(command, seconds, null)
+
+    private fun runBounded(command: String, seconds: Long, completeOutputLimit: Int?): CommandResult {
         val p = ProcessBuilder("su", "-c", "timeout -s KILL $seconds sh -c ${quote(command)}").redirectErrorStream(true).start()
         val output = StringBuilder()
+        val limit = completeOutputLimit ?: 262_144
+        var complete = false
         val reader = Thread {
             runCatching { p.inputStream.reader().use { stream ->
                 val buffer = CharArray(2048)
+                var overflow = false
                 while (true) {
                     val size = stream.read(buffer)
                     if (size < 0) break
-                    synchronized(output) { if (output.length < 262_144) output.append(buffer, 0, minOf(size, 262_144 - output.length)) }
+                    synchronized(output) {
+                        val retained = minOf(size, limit - output.length)
+                        output.append(buffer, 0, retained)
+                        overflow = overflow || retained < size
+                    }
                 }
+                complete = !overflow
             } }
         }.apply { isDaemon = true; start() }
-        val finished = p.waitFor(seconds + 2, TimeUnit.SECONDS)
-        if (!finished) p.destroyForcibly()
-        reader.join(500)
-        runCatching { p.inputStream.close() }
-        return CommandResult(if (finished) p.exitValue() else 124, synchronized(output) { output.toString() })
+        try {
+            val finished = p.waitFor(seconds + 2, TimeUnit.SECONDS)
+            if (!finished) p.destroyForcibly()
+            reader.join(500)
+            val code = if (finished) p.exitValue() else 124
+            if (code == 0 && completeOutputLimit != null && (reader.isAlive || !complete))
+                return CommandResult(65, "目录列表过大或读取不完整")
+            return CommandResult(code, synchronized(output) { output.toString() })
+        } finally {
+            if (p.isAlive) p.destroyForcibly()
+        }
     }
 
     fun pruneLogs(clear: Boolean = false): CommandResult = runBounded("""
@@ -92,8 +108,8 @@ class RootExecutor {
     /** List one directory without losing filenames that contain spaces or punctuation. */
     fun browse(path: String): Pair<CommandResult, List<BrowserEntry>> {
         require(validPath(path)) { "目录路径无效" }
-        val result = run("""
-            set -eu
+        val result = runBounded("""
+            set -eu -o pipefail
             d=${quote(path)}
             [ -d "${'$'}d" ] && [ -r "${'$'}d" ] || { echo '目录不存在或不可读取'; exit 45; }
             find "${'$'}d" -mindepth 1 -maxdepth 1 -type d -print0 | base64 | tr -d '\n'
@@ -101,7 +117,8 @@ class RootExecutor {
             find "${'$'}d" -mindepth 1 -maxdepth 1 -type f -print0 | base64 | tr -d '\n'
             printf '\n'
             find "${'$'}d" -mindepth 1 -maxdepth 1 -type l -print0 | base64 | tr -d '\n'
-        """.trimIndent())
+        """.trimIndent(), seconds = 10, completeOutputLimit = 8 * 1024 * 1024)
+        if (result.code == 124 || result.code == 137) return CommandResult(result.code, "目录读取超时，请重试") to emptyList()
         if (result.code != 0) return result to emptyList()
         val types = listOf("d", "f", "l")
         val entries = result.output.lineSequence().take(3).mapIndexedNotNull { index, line ->
