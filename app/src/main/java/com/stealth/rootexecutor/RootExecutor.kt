@@ -26,7 +26,7 @@ class RootExecutor {
     /** Bounded Root setup/query, including su authorization and output drain. */
     fun runBounded(command: String, seconds: Long = 10): CommandResult = runBounded(command, seconds, null)
 
-    private fun runBounded(command: String, seconds: Long, completeOutputLimit: Int?): CommandResult {
+    internal fun runBounded(command: String, seconds: Long, completeOutputLimit: Int?): CommandResult {
         val p = ProcessBuilder("su", "-c", "timeout -s KILL $seconds sh -c ${quote(command)}").redirectErrorStream(true).start()
         val output = StringBuilder()
         val limit = completeOutputLimit ?: 262_144
@@ -53,7 +53,7 @@ class RootExecutor {
             reader.join(500)
             val code = if (finished) p.exitValue() else 124
             if (code == 0 && completeOutputLimit != null && (reader.isAlive || !complete))
-                return CommandResult(65, "目录列表过大或读取不完整")
+                return CommandResult(65, "输出过大或读取不完整")
             return CommandResult(code, synchronized(output) { output.toString() })
         } finally {
             if (p.isAlive) p.destroyForcibly()
@@ -271,16 +271,37 @@ class RootExecutor {
 
     /** Stage a private copy where PackageInstaller can read it; always clean it up. */
     fun installApk(path: String): CommandResult {
-        require(validPath(path) && path.endsWith(".apk", true)) { "APK 路径无效" }
+        require(validPath(path) && BrowserFileTypes.isApk(path.substringAfterLast('/'))) { "APK 路径无效" }
         return runBounded("""
             set -eu
-            [ -f ${quote(path)} ] || { echo 'APK 文件不存在'; exit 46; }
+            [ -f ${quote(path)} ] && [ ! -L ${quote(path)} ] || { echo 'APK 文件不存在或为符号链接'; exit 46; }
             tmp=${'$'}(mktemp /data/local/tmp/tubing-install.XXXXXX)
             trap 'rm -f "${'$'}tmp"' EXIT
             cp -- ${quote(path)} "${'$'}tmp"
             chmod 644 "${'$'}tmp"
             pm install -r --user 0 "${'$'}tmp"
         """.trimIndent(), 120)
+    }
+
+    /** Bounded private snapshot for Android's image/APK parsers; caller always deletes it. */
+    internal fun prepareFilePreview(path: String, cache: File, apk: Boolean): File {
+        require(validPath(path)) { "预览路径无效" }
+        val limit = if (apk) 512L * 1024 * 1024 else 64L * 1024 * 1024
+        val snapshot = File.createTempFile("file-preview-", if (apk) ".apk" else ".img", cache)
+        try {
+            val result = runBounded("""
+                set -eu
+                s=${quote(path)}; f=${quote(snapshot.absolutePath)}
+                [ -f "${'$'}s" ] && [ ! -L "${'$'}s" ] || exit 46
+                [ "${'$'}(stat -c %s "${'$'}s")" -le $limit ] || exit 47
+                head -c ${limit + 1} "${'$'}s" > "${'$'}f"
+                [ "${'$'}(stat -c %s "${'$'}f")" -le $limit ] || exit 47
+                chown ${android.os.Process.myUid()} "${'$'}f"
+                chmod 600 "${'$'}f"
+            """.trimIndent(), 15)
+            check(result.code == 0) { "无法读取文件预览" }
+            return snapshot
+        } catch (error: Exception) { snapshot.delete(); throw error }
     }
 
     fun renamePath(path: String, newName: String): CommandResult {

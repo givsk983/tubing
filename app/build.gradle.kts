@@ -27,8 +27,8 @@ android {
         applicationId = "com.stealth.rootexecutor"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        versionName = "1.4.7"
+        versionCode = 24
+        versionName = "1.4.9"
         testInstrumentationRunner = "com.stealth.rootexecutor.FeatureSmokeInstrumentation"
     }
     compileOptions {

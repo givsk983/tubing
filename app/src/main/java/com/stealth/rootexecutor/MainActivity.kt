@@ -27,6 +27,8 @@ private data class ScriptInputPreset(val name: String, val steps: List<String>, 
 private data class SyncSource(val label: String, val path: String)
 private data class QuickShortcut(val name: String, val kind: String, val fileName: String, val presetName: String?)
 private data class InstalledAutomationApp(val packageName: String, val label: String, val icon: android.graphics.drawable.Drawable)
+private data class UriImportResult(val name: String, val archive: File? = null,
+    val items: List<ZipItem> = emptyList(), val imported: ManagedFile? = null)
 
 class MainActivity : Activity() {
     private val io = Executors.newSingleThreadExecutor()
@@ -45,6 +47,7 @@ class MainActivity : Activity() {
     private var creatingPackage = false
     private var checkUpdateButton: Button? = null
     private val root = RootExecutor()
+    private val thumbnails by lazy { BrowserThumbnails(this, root) }
     private var browserDirectoryReader: (String) -> Pair<CommandResult, List<BrowserEntry>> = { root.browse(it) }
     private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
     private lateinit var page: LinearLayout
@@ -110,6 +113,10 @@ class MainActivity : Activity() {
     private var browserSelectionBar: LinearLayout? = null
     private var browserNavigationBar: LinearLayout? = null
     private var browserImportMode = false
+    private val pendingShares = java.util.ArrayDeque<Intent>()
+    private var activeShare: Intent? = null
+    private var sharedImportDialog: android.app.Dialog? = null
+    private var sharedImportGuard = false
     private var browserSelectionCount: TextView? = null
     private var activeBrowserLeft = true
     private var browserTargetLabel: TextView? = null
@@ -131,11 +138,73 @@ class MainActivity : Activity() {
         colors()
         setTheme(if (dark) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(savedInstanceState)
+        @Suppress("DEPRECATION")
+        val restoredShares = savedInstanceState?.getParcelableArrayList<Intent>("pendingShares")
+        if (restoredShares != null) pendingShares.addAll(restoredShares)
+        else if (SharedImport.accepts(intent)) pendingShares.add(Intent(intent))
+        if (pendingShares.isNotEmpty()) QuickExecutionExit.cancel()
         if (!prefs.getBoolean("privacyDefaultsV1", false)) prefs.edit().putBoolean("saveLogs", false).putBoolean("privacyDefaultsV1", true).apply()
         io.execute { runCatching { PrivateInputStore.migrate(prefs) }.onFailure {
             runOnUiThread { if (!isDestroyed) message("输入数据迁移未完成", "加密存储不可用，原数据已保留。请暂缓自动执行。") }
         } }
         showGate(); checkRoot()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (SharedImport.accepts(intent)) {
+            QuickExecutionExit.cancel()
+            pendingShares.add(Intent(intent))
+            showPendingShare()
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putParcelableArrayList("pendingShares", ArrayList<Intent>().apply {
+            activeShare?.let { add(it) }
+            addAll(pendingShares)
+        })
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun showPendingShare() {
+        if (!granted || isFinishing || isDestroyed || activeShare != null || pendingShares.isEmpty()) return
+        val share = pendingShares.removeFirst()
+        activeShare = share
+        sharedImportGuard = true
+        QuickExecutionExit.importOpened()
+        filePickerIo.execute {
+            val result = runCatching { SharedImport.uris(share).map { it to displayName(it) } }
+            runOnUiThread {
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                result.fold({ files ->
+                    sharedImportDialog = styledDialog("导入分享文件", "ZIP / SH / ELF · ${files.size} 个文件", {
+                        column().apply {
+                            addView(text("点击文件开始导入。ZIP 可作为完整项目导入，也可选择包内程序；SH / ELF 保存到脚本库，不会自动运行。", 13f, mutedColor()))
+                            files.forEach { (uri, name) ->
+                                addView(optionCard(name, "点击导入此文件") { importUri(uri, name) })
+                            }
+                        }
+                    }, { dialog -> listOf("关闭" to { dialog.dismiss() }) }).also { dialog ->
+                        dialog.setOnDismissListener {
+                            sharedImportDialog = null
+                            finishSharedImport()
+                            showPendingShare()
+                        }
+                    }
+                }, {
+                    finishSharedImport()
+                    message("无法导入分享文件", it.message ?: "来源应用未提供可读取的文件")
+                    showPendingShare()
+                })
+            }
+        }
+    }
+
+    private fun finishSharedImport() {
+        activeShare = null
+        if (sharedImportGuard) { sharedImportGuard = false; QuickExecutionExit.importClosed() }
     }
     private fun colors() {
         dark = when (prefs.getString("theme", "system")) {
@@ -211,6 +280,7 @@ class MainActivity : Activity() {
                 checking = false; granted = result.code == 0
                 if (granted) {
                     showMain()
+                    showPendingShare()
                     if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
                         requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 9)
                 } else showGate("未获得 Root 授权，无法进入。\n请在 Root 管理器中允许 Tubing。\n退出码：${result.code}\n${result.output}")
@@ -525,7 +595,8 @@ class MainActivity : Activity() {
             minimumHeight = dp(48)
             setPadding(dp(3), dp(3), dp(5), dp(3))
             background = browserRowBackground()
-            addView(text("📁  ..", fontSize, this@MainActivity.foreground).apply {
+            addView(fileRowIcon(R.drawable.ic_file_folder), LinearLayout.LayoutParams(dp(32), dp(32)))
+            addView(text("..", fontSize, this@MainActivity.foreground).apply {
                 maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
                 setPadding(0, dp(3), 0, dp(1))
             }, LinearLayout.LayoutParams(0, -2, 1f))
@@ -607,8 +678,19 @@ class MainActivity : Activity() {
                 buttonTintList = android.content.res.ColorStateList.valueOf(accent)
                 setPadding(0, 0, 0, 0)
             }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            addView(fileRowIcon(R.drawable.ic_file_document).apply {
+                tag = "fileIcon"
+                addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                    override fun onViewAttachedToWindow(view: View) = Unit
+                    override fun onViewDetachedFromWindow(view: View) { thumbnails.unbind(view as ImageView) }
+                })
+            },
+                LinearLayout.LayoutParams(dp(32), dp(32)))
             addView(text("", fontSize, this@MainActivity.foreground).apply {
+                tag = "fileName"
                 maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(0, dp(3), 0, dp(1))
+                breakStrategy = android.graphics.text.LineBreaker.BREAK_STRATEGY_SIMPLE
+                hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
             }, LinearLayout.LayoutParams(0, -2, 1f))
         }
         row.tag = entry.path
@@ -622,14 +704,8 @@ class MainActivity : Activity() {
                 updateBrowserSelection()
             }
         }
-        val icon = when {
-            entry.type == "d" -> "📁"
-            entry.type == "l" -> "↪"
-            entry.name.endsWith(".zip", true) -> "📦"
-            entry.type == "f" -> "📄"
-            else -> "▪"
-        }
-        (row.getChildAt(row.childCount - 1) as TextView).text = "$icon  ${entry.name}"
+        thumbnails.bind(row.findViewWithTag("fileIcon"), entry, fileRowIconResource(entry.type, entry.name), accent)
+        row.findViewWithTag<TextView>("fileName").text = entry.name
         installBrowserSwipe(row, left, entry, selectablePaths)
         row.setOnClickListener {
             focusBrowser(left)
@@ -644,7 +720,7 @@ class MainActivity : Activity() {
                 updateBrowserSelection()
             } else if (entry.type == "d") navigateBrowser(left, entry.path)
             else if (entry.type == "f" && entry.name.endsWith(".zip", true)) openZipBrowser(left, entry)
-            else if (entry.type == "f" && entry.name.endsWith(".apk", true)) installBrowserApk(entry)
+            else if (entry.type == "f" && BrowserFileTypes.isApk(entry.name)) installBrowserApk(entry)
             else {
                 selection.selectOnly(entry.path)
                 updateBrowserSelection()
@@ -665,6 +741,23 @@ class MainActivity : Activity() {
             true
         }
         return row
+    }
+
+    private fun fileRowIconResource(type: String, name: String) = when {
+        type == "d" -> R.drawable.ic_file_folder
+        type == "l" -> R.drawable.ic_file_link
+        name.endsWith(".zip", true) -> R.drawable.ic_file_archive
+        BrowserFileTypes.isApk(name) -> R.drawable.ic_file_apk
+        BrowserFileTypes.isImage(name) -> R.drawable.ic_file_image
+        else -> R.drawable.ic_file_document
+    }
+
+    private fun fileRowIcon(resource: Int) = ImageView(this).apply {
+        setImageResource(resource)
+        imageTintList = android.content.res.ColorStateList.valueOf(accent)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        setPadding(dp(4), dp(5), dp(6), dp(5))
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
     private fun browserRowBackground(): android.graphics.drawable.Drawable {
@@ -846,9 +939,18 @@ class MainActivity : Activity() {
 
     private fun refreshBrowsers(invalidateCache: Boolean = true) {
         if (!granted || tab != 1) return
-        if (invalidateCache) directoryCache.clear()
+        if (invalidateCache) { directoryCache.clear(); thumbnails.clear() }
         readBrowserDirectory(!activeBrowserLeft)
         readBrowserDirectory(activeBrowserLeft)
+        if (invalidateCache) browserLists.filterNotNull().forEach { list ->
+            for (index in 0 until list.childCount) {
+                val row = list.getChildAt(index)
+                val entry = list.getItemAtPosition(list.firstVisiblePosition + index) as? BrowserEntry ?: continue
+                row.findViewWithTag<ImageView>("fileIcon")?.let { icon ->
+                    thumbnails.bind(icon, entry, fileRowIconResource(entry.type, entry.name), accent)
+                }
+            }
+        }
     }
 
     private fun readBrowserDirectory(left: Boolean, from: String? = null) {
@@ -981,7 +1083,8 @@ class MainActivity : Activity() {
     private fun showEntryActions(left: Boolean, entry: BrowserEntry) {
         val actions = if (entry.type == "f" && entry.name.endsWith(".zip", true))
             arrayOf("复制到另一侧", "重命名", "删除", "解压 ZIP")
-            else if (entry.type == "f" && entry.name.endsWith(".apk", true)) arrayOf("复制到另一侧", "重命名", "删除", "安装 APK")
+            else if (entry.type == "f" && BrowserFileTypes.isApk(entry.name)) arrayOf("复制到另一侧", "重命名", "删除", "安装 APK")
+            else if (entry.type == "f" && entry.name.endsWith(".sh", true)) arrayOf("复制到另一侧", "重命名", "删除", "执行", "编辑 SH")
             else if (entry.type == "f") arrayOf("复制到另一侧", "重命名", "删除", "执行")
             else arrayOf("复制到另一侧", "重命名", "删除")
         AlertDialog.Builder(this).setTitle(entry.name).setItems(actions) { _, index ->
@@ -991,8 +1094,9 @@ class MainActivity : Activity() {
                     work({ root.copyPath(entry.path, destination).also { check(it.code == 0) { it.output.ifBlank { "复制失败" } } } }) { refreshBrowsers() }
                 }
                 1 -> renameBrowserEntry(left, entry)
+                4 -> openShellEditor(entry.path)
                 3 -> when {
-                    entry.name.endsWith(".apk", true) -> installBrowserApk(entry)
+                    BrowserFileTypes.isApk(entry.name) -> installBrowserApk(entry)
                     entry.name.endsWith(".zip", true) -> showExtractZip(left, entry)
                     else -> executeBrowserEntry(entry)
                 }
@@ -1002,6 +1106,11 @@ class MainActivity : Activity() {
                     }.show()
             }
         }.setNegativeButton("取消", null).show()
+    }
+
+    private fun openShellEditor(path: String) {
+        if (!path.endsWith(".sh", true)) { message("无法编辑", "内置编辑器仅支持 .sh 脚本。"); return }
+        startActivityForResult(Intent(this, ShellEditorActivity::class.java).putExtra("path", path), 120)
     }
 
     private fun executeBrowserEntry(entry: BrowserEntry) {
@@ -1157,9 +1266,14 @@ class MainActivity : Activity() {
             listing.addView(navigation)
             val children = items.filter { it.path.startsWith(prefix) && '/' !in it.path.removePrefix(prefix) }
             if (children.isEmpty()) listing.addView(text("目录为空", 14f, mutedColor()))
-            children.take(visibleCount).forEach { item ->
-                val card = optionCard("${if (item.directory) "📁" else "📄"} ${item.name}",
-                    if (item.directory) "文件夹 · 点击进入" else "${item.size} 字节 · 点击预览", item.path in selected) {
+            children.take(visibleCount).forEachIndexed { index, item ->
+                if (index > 0) listing.addView(View(this).apply { setBackgroundColor(palette.outline) },
+                    LinearLayout.LayoutParams(-1, maxOf(1, dp(1))).apply {
+                        marginStart = dp(8); marginEnd = dp(8)
+                    })
+                val row = zipEntryRow(item.name,
+                    if (item.directory) "文件夹 · 点击进入" else "${item.size} 字节 · 点击预览", item.path in selected,
+                    fileRowIconResource(if (item.directory) "d" else "f", item.name)) {
                     if (item.directory) { prefix = item.path + "/"; visibleCount = 200; render() }
                     else if (selected.isNotEmpty()) {
                         if (!selected.add(item.path)) selected.remove(item.path)
@@ -1177,16 +1291,16 @@ class MainActivity : Activity() {
                         }
                     }
                 }
-                card.setOnLongClickListener {
+                row.setOnLongClickListener {
                     if (importMode && item.directory) {
                         Toast.makeText(this, "请进入目录选择具体文件", Toast.LENGTH_SHORT).show()
                         return@setOnLongClickListener true
                     }
                     if (!selected.add(item.path)) selected.remove(item.path)
-                    card.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    row.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                     render(); true
                 }
-                listing.addView(card)
+                listing.addView(row, LinearLayout.LayoutParams(-1, -2))
             }
             if (children.size > visibleCount) listing.addView(button("显示更多（剩余 ${children.size - visibleCount} 项）") {
                 visibleCount += 200; render()
@@ -1252,6 +1366,29 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun zipEntryRow(title: String, detail: String, active: Boolean, icon: Int, onClick: () -> Unit) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(76)
+        setPadding(dp(8), dp(12), dp(8), dp(12))
+        background = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(Color.argb(40, 40, 185, 207)),
+            android.graphics.drawable.ColorDrawable(if (active) palette.selected else Color.TRANSPARENT), null)
+        addView(fileRowIcon(icon), LinearLayout.LayoutParams(dp(32), dp(32)))
+        val labels = column()
+        labels.addView(text(title, 17f).apply {
+            typeface = Typeface.DEFAULT_BOLD
+            maxLines = 3; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            setPadding(0, 0, dp(8), 0)
+        })
+        labels.addView(text(detail, 13f, mutedColor()).apply { setPadding(0, dp(6), 0, 0) })
+        addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
+        if (active) addView(text("✓", 18f, accent).apply { setPadding(dp(8), 0, 0, 0) })
+        contentDescription = "$title，$detail${if (active) "，已选" else ""}"
+        for (i in 0 until childCount) getChildAt(i).importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        isFocusable = true; isClickable = true; isSelected = active
+        setOnClickListener { onClick() }
+    }
+
     private fun executionPage() {
         val area = column()
         val actions = LinearLayout(this)
@@ -1264,6 +1401,9 @@ class MainActivity : Activity() {
             if (SessionState.running) confirmAction("终止执行", "终止当前脚本及其子进程？", "终止") { ExecutionService.active?.terminate() }
         })
         area.addView(controls)
+        selected?.takeIf { it.name.endsWith(".sh", true) }?.let { file ->
+            area.addView(button("编辑脚本") { openShellEditor(root.filePath(file)) })
+        }
         modeSelector = button(modeText()) { chooseMode() }
         area.addView(modeSelector)
         terminalStatus = text(SessionState.status, 12f, accent); area.addView(terminalStatus)
@@ -1299,38 +1439,48 @@ class MainActivity : Activity() {
         keyBarToggle?.contentDescription = if (collapsed) "向上展开终端快捷键" else "向下收起终端快捷键"
     }
 
-    private fun openZipImport(uri: Uri, name: String) {
-        val loading = styledDialog("正在打开 ZIP", name, { text("读取文件目录，请稍候…") }, { emptyList() })
+    private fun importUri(uri: Uri, suppliedName: String? = null, forceZip: Boolean = false) {
+        val loading = styledDialog("正在导入文件", suppliedName.orEmpty(), { text("读取并校验文件，请稍候…") }, { emptyList() })
         loading.setCancelable(false); loading.setCanceledOnTouchOutside(false)
         io.execute {
             val result = runCatching {
-                val staging = File(cacheDir, "zip-import-${java.util.UUID.randomUUID()}")
+                val name = suppliedName ?: displayName(uri)
+                val staging = File(cacheDir, "uri-import-${java.util.UUID.randomUUID()}")
                 check(staging.mkdirs()) { "无法创建导入临时目录" }
                 val archive = File(staging, "archive.zip")
+                var keepSnapshot = false
                 try {
-                    (contentResolver.openInputStream(uri) ?: error("无法读取 ZIP")).use { input ->
-                        archive.outputStream().use { output ->
-                            val buffer = ByteArray(32 * 1024)
-                            var total = 0L
-                            while (true) {
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                total += count
-                                require(total <= ZipExtractor.MAX_ARCHIVE_BYTES) { "ZIP 文件超过 512 MiB" }
-                                output.write(buffer, 0, count)
-                            }
-                        }
+                    (contentResolver.openInputStream(uri) ?: error("无法读取文件，请重新分享并授予读取权限")).use {
+                        IncomingFile.copy(it, archive)
                     }
-                    archive to ZipExtractor.inspect(archive)
-                } catch (error: Exception) { staging.deleteRecursively(); throw error }
+                    val mime = runCatching { contentResolver.getType(uri) }.getOrNull()
+                    if (forceZip || IncomingFile.isZip(archive, name, mime)) {
+                        val items = ZipExtractor.inspect(archive)
+                        keepSnapshot = true
+                        UriImportResult(name, archive, items)
+                    } else {
+                        val kind = ZipExtractor.importKind(name, archive.inputStream().use { input -> ByteArray(4).also { input.read(it) } })
+                        val response = root.import(archive, name, kind)
+                        check(response.code == 0) { response.output.ifBlank { "导入失败" } }
+                        val fields = response.output.lineSequence().firstOrNull { it.startsWith("IMPORTED|") }?.split('|')
+                        check(fields?.size == 3) { "无法确认导入结果" }
+                        UriImportResult(name, imported = ManagedFile(fields[1], fields[2], "777"))
+                    }
+                } finally { if (!keepSnapshot) staging.deleteRecursively() }
             }
             runOnUiThread {
-                if (isDestroyed) result.getOrNull()?.first?.parentFile?.deleteRecursively()
+                if (isDestroyed || isFinishing) result.getOrNull()?.archive?.let { discardZipSnapshot(it) }
                 else {
                     loading.dismiss()
-                    result.fold({ (archive, items) ->
-                        showZipImportOptions(true, BrowserEntry("", name, "f", archive.length(), 0), archive, items)
-                    }, { message("无法打开 ZIP", it.message ?: "压缩包损坏或格式不受支持") })
+                    result.fold({ incoming ->
+                        if (incoming.archive != null) {
+                            showZipImportOptions(true, BrowserEntry("", incoming.name, "f", incoming.archive.length(), 0), incoming.archive, incoming.items)
+                        } else {
+                            selected = incoming.imported
+                            tab = 0; showTab()
+                            message("导入完成", selected?.name ?: incoming.name)
+                        }
+                    }, { message("导入失败", it.message ?: "无法读取文件或格式不受支持") })
                 }
             }
         }
@@ -1834,14 +1984,15 @@ class MainActivity : Activity() {
             val folders = ExecutionLibrary.folders(files, prefix)
             val programs = ExecutionLibrary.programs(files, prefix)
             folders.forEach { folder ->
-                listing.addView(optionCard("📁 ${folder.name}", "${folder.programCount} 个程序 · 点击进入",
-                    selected?.let { it.kind == "project" && it.name.startsWith(folder.prefix) } == true) {
+                listing.addView(optionCard(folder.name, "${folder.programCount} 个程序 · 点击进入",
+                    selected?.let { it.kind == "project" && it.name.startsWith(folder.prefix) } == true,
+                    R.drawable.ic_file_folder) {
                     prefix = folder.prefix; render()
                 })
             }
             programs.forEach { file ->
                 listing.addView(optionCard(file.name.substringAfterLast('/'), "${root.filePath(file)} · 权限 ${file.mode}",
-                    selected?.kind == file.kind && selected?.name == file.name) {
+                    selected?.kind == file.kind && selected?.name == file.name, R.drawable.ic_file_document) {
                     selected = file; dialog.dismiss(); showTab(); afterSelection()
                 })
             }
@@ -2121,10 +2272,15 @@ class MainActivity : Activity() {
         return dialog
     }
 
-    private fun optionCard(title: String, detail: String, active: Boolean = false, onClick: () -> Unit) = dialogCard(active).apply {
+    private fun optionCard(title: String, detail: String, active: Boolean = false, icon: Int? = null, onClick: () -> Unit) = dialogCard(active).apply {
         minimumHeight = dp(64)
         background = android.graphics.drawable.RippleDrawable(
             android.content.res.ColorStateList.valueOf(Color.argb(40, 40, 185, 207)), background, null)
+        val labels = if (icon == null) this else column().also { labels ->
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            addView(fileRowIcon(icon), LinearLayout.LayoutParams(dp(32), dp(32)))
+            addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
+        }
         val heading = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER_VERTICAL }
         heading.addView(text(title, 16f).apply {
             typeface = Typeface.DEFAULT_BOLD
@@ -2132,8 +2288,8 @@ class MainActivity : Activity() {
             setPadding(0, 0, dp(8), 0)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         if (active) heading.addView(text("✓ 已选", 12f, accent).apply { setPadding(0, 0, 0, 0) })
-        addView(heading)
-        if (detail.isNotBlank()) addView(text(detail, 13f, mutedColor()).apply { setPadding(0, dp(7), 0, 0) })
+        labels.addView(heading)
+        if (detail.isNotBlank()) labels.addView(text(detail, 13f, mutedColor()).apply { setPadding(0, dp(7), 0, 0) })
         contentDescription = "$title，$detail${if (active) "，已选" else ""}"
         for (i in 0 until childCount) getChildAt(i).importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         isFocusable = true; isClickable = true; isSelected = active
@@ -2823,10 +2979,15 @@ class MainActivity : Activity() {
                         dialog.dismiss()
                         showTab()
                     }.apply {
-                        addView(text("📁  示例文件夹\n📄  示例脚本.sh", size.toFloat()).apply {
-                            setPadding(0, dp(8), 0, 0)
-                            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                        })
+                        listOf(R.drawable.ic_file_folder to "示例文件夹", R.drawable.ic_file_document to "示例脚本.sh").forEach { (icon, name) ->
+                            addView(LinearLayout(this@MainActivity).apply {
+                                gravity = Gravity.CENTER_VERTICAL
+                                setPadding(0, dp(8), 0, 0)
+                                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                                addView(fileRowIcon(icon), LinearLayout.LayoutParams(dp(32), dp(32)))
+                                addView(text(name, size.toFloat()).apply { setPadding(0, 0, 0, 0) }, LinearLayout.LayoutParams(0, -2, 1f))
+                            })
+                        }
                     })
                 }
             }
@@ -3579,6 +3740,13 @@ class MainActivity : Activity() {
     @Deprecated("SAF result")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 120) {
+            if (resultCode == RESULT_OK) {
+                directoryCache.clear()
+                if (granted && tab == 1) refreshBrowsers()
+            }
+            return
+        }
         if (requestCode == 110) {
             val manager = prefs.getString("moduleExportManager", null)?.takeIf { it.isNotBlank() }
             prefs.edit().remove("moduleExportManager").apply()
@@ -3597,27 +3765,7 @@ class MainActivity : Activity() {
         }
         if (requestCode !in 100..102 || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
-        val name = runCatching { displayName(uri) }.getOrElse {
-            message("导入失败", it.message ?: "无法读取文件名"); return
-        }
-        if (requestCode == 102 || name.endsWith(".zip", true) ||
-            runCatching { contentResolver.getType(uri) }.getOrNull() in setOf("application/zip", "application/x-zip-compressed")) {
-            openZipImport(uri, name)
-            return
-        }
-        work({
-            val temp = File.createTempFile("incoming-", ".tmp", cacheDir)
-            try {
-                (contentResolver.openInputStream(uri) ?: error("无法读取文件")).use { input -> temp.outputStream().use { input.copyTo(it) } }
-                val magic = temp.inputStream().use { input -> ByteArray(4).also { input.read(it) } }
-                val kind = ZipExtractor.importKind(name, magic)
-                root.import(temp, name, kind).also { check(it.code == 0) { it.output } }
-            } finally { temp.delete() }
-        }) { result ->
-            val fields = result.output.lineSequence().firstOrNull { it.startsWith("IMPORTED|") }?.split('|')
-            if (fields?.size == 3) selected = ManagedFile(fields[1], fields[2], "777")
-            tab = 0; showTab(); message("导入完成", selected?.name ?: "文件已导入")
-        }
+        importUri(uri, forceZip = requestCode == 102)
     }
     private fun displayName(uri: Uri): String = runCatching {
         contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
@@ -3669,12 +3817,17 @@ class MainActivity : Activity() {
         }
     }
     override fun onDestroy() {
+        sharedImportDialog?.setOnDismissListener(null)
+        sharedImportDialog?.dismiss()
+        sharedImportDialog = null
+        finishSharedImport()
         executionFilePicker?.dismiss()
         executionFilePicker = null
         favoritesSheet?.closeImmediately()
         browserRequests.invalidateAll()
         browserReadTasks.forEach { it?.cancel(false) }
         browserIo.shutdown()
+        thumbnails.close()
         startButtonHandler.removeCallbacks(startButtonRefresh)
         SessionState.unsubscribe(listener); terminalReady = false; terminal?.destroy()
         io.shutdown(); updateIo.shutdownNow(); appPickerIo.shutdownNow(); filePickerIo.shutdownNow(); super.onDestroy()

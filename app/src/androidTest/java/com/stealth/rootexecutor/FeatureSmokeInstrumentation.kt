@@ -34,6 +34,8 @@ class FeatureSmokeInstrumentation : Instrumentation() {
     private var automationSafetyOnly = false
     private var automationRecoveryOnly = false
     private var moduleBundleOnly = false
+    private var filePreviewsOnly = false
+    private var sharedImportsOnly = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         cleanupFixtureId = arguments?.getString("cleanup_fixture_id")
@@ -45,10 +47,22 @@ class FeatureSmokeInstrumentation : Instrumentation() {
         automationSafetyOnly = arguments?.getString("automation_safety_only") == "true"
         automationRecoveryOnly = arguments?.getString("automation_recovery_only") == "true"
         moduleBundleOnly = arguments?.getString("module_bundle_only") == "true"
+        filePreviewsOnly = arguments?.getString("file_previews_only") == "true"
+        sharedImportsOnly = arguments?.getString("shared_imports_only") == "true"
         start()
     }
 
     override fun onStart() {
+        if (sharedImportsOnly) {
+            try { finish(Activity.RESULT_OK, Bundle().apply { putString("shared_imports", SharedImportChecks.run(targetContext)) }) }
+            catch (error: Throwable) { finish(Activity.RESULT_CANCELED, Bundle().apply { putString("shared_import_error", error.stackTraceToString()) }) }
+            return
+        }
+        if (filePreviewsOnly) {
+            try { finish(Activity.RESULT_OK, Bundle().apply { putString("file_previews", FilePreviewChecks.run(targetContext, ::onUi)) }) }
+            catch (error: Throwable) { finish(Activity.RESULT_CANCELED, Bundle().apply { putString("file_preview_error", error.stackTraceToString()) }) }
+            return
+        }
         if (moduleBundleOnly) {
             try {
                 val bundle = BundledModule.read(targetContext)

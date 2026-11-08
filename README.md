@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/tag/v1.4.7"><img alt="Release v1.4.7" src="https://img.shields.io/badge/release-v1.4.7-28B9CF?style=flat-square"></a>
+  <a href="./CHANGELOG.md"><img alt="Version v1.4.9" src="https://img.shields.io/badge/version-v1.4.9-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/download/v1.4.7/tubing-v1.4.7.apk">下载 APK</a>
+  <a href="https://github.com/givsk983/tubing/releases/download/v1.4.9/tubing-v1.4.9.apk">下载已发布 APK（1.4.9）</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前 `v1.4.7` 是沿用 Debug 签名的瘦身测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前源码为 `v1.4.9`，沿用 Debug 签名的瘦身测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -36,11 +36,24 @@
 | 交互终端 | 内置离线 xterm.js，流式显示 ANSI 输出并接收键盘与输入法内容 |
 | 快捷启动 | 为脚本绑定输入方案，使用简洁首页一键启动；也可随时切回完整界面 |
 | 文件管理 | 双栏浏览已导入目录与设备存储，支持复制、重命名、删除、新建目录、路径收藏和 ZIP 解压 |
+| SH 编辑器 | 查看与修改 UTF-8 脚本，显示行号、Shell 语法高亮，保存前创建独立备份 |
 | 会话与记录 | 默认保留最近 50 次执行，可调整保留次数并保存日志；任务被划走时尝试终止对应进程组 |
 
 点击 ZIP 可浏览内部目录、预览文件内容；长按选择文件或文件夹，再点击“解压所选”，直接解压到另一侧目录或压缩包所在目录。已有同名目标不会被覆盖。
 
+1.4.8 起，ZIP 内目录与文件使用横线分隔的平面列表，已选项显示淡色背景和勾号。
+
+文件列表将平面线条图标放在固定左栏，名称在右侧独立显示，长文件名最多两行，不会绕到图标下方。ZIP 列表、执行文件选择和字号预览使用相同图标样式。
+
+双栏列表中的 APK 显示安装包内的应用图标，图片显示缩略预览，ZIP 使用独立收纳盒图标。`.apk.1` 等数字后缀（也兼容 `.akp.1`）支持点击或长按选择安装，原文件无需改名。预览在后台加载，无法读取、格式不受设备支持、图片超过 64 MiB 或 APK 超过 512 MiB 时保留类型图标；预览大小限制不改变安装入口。
+
+文件管理中长按普通 `.sh` 文件，选择“编辑 SH”；执行页选中脚本后也可点击“编辑脚本”。编辑器支持行号、注释 / 字符串 / 变量 / 关键字高亮、撤销 / 重做、Tab 与常用符号输入，支持最多 256 KiB 的 UTF-8 脚本，并保留 UTF-8 BOM 与原有 LF / CRLF 格式。返回时如有修改，会询问保存或放弃。
+
+每次保存先在原目录创建 `.tubing-backup-时间.随机后缀` 备份，校验完成后再替换原文件，同时保留权限、所有者与 SELinux 上下文。备份失败或原文件已被其他工具修改时取消保存并保留编辑内容。保存成功后点击底部状态可查看并复制备份路径；备份不会自动清理。任务执行中可查看编辑内容，需等待任务结束后保存；编辑器打开期间暂缓快捷任务结束后的自动退出，避免丢失草稿。符号链接、二进制文件和非 UTF-8 文件不支持编辑。
+
 文件管理双栏支持左右滑动文件或文件夹进入选择模式。左滑追加当前项；第一次右滑选中当前项，后续右滑按当前列表顺序追加选中“上次右滑项到本次右滑项”的完整范围（包含两端，支持向上选）。选择模式中点按只追加选择，重复点按保持选中，不打开文件夹或 ZIP，也不改变右滑范围起点。左右栏分别记录选择，可通过“所选操作”复制或删除，多选时删除会二次确认；单选仍可重命名或解压 ZIP。点击“取消选择”退出选择模式；系统返回键直接进入当前栏上级目录，根目录提示已到顶；进入其他目录清空该栏选择，刷新保留仍存在的已选项。
+
+1.4.9 起，可在 Telegram、QQ 等应用中先下载 ZIP / SH / ELF 文件，再选择“分享”或“用其他应用打开”→ Tubing。在“导入分享文件”列表点击文件确认导入，多文件分享可逐个导入。ZIP 可整包作为项目导入，也可浏览并挑选包内程序；SH / ELF 保存到脚本库，不自动运行。支持通用文件 MIME 和无扩展名 ZIP / ELF，单个文件最大 512 MiB；如来源应用未授予读取权限，请重新分享文件。
 
 在执行页点击“导入文件”，可选择“内置文件管理器”“MT 管理器”或“手机文件管理器”。设置页的“默认导入方式”可设为每次询问，或固定使用其中一种；临时切换来源不会改变默认设置。MT 同时支持标准版与 Canary 版，未安装时可改选其他来源。
 
@@ -68,7 +81,7 @@
 
 配套 Magisk 模块支持识别前台 App 并执行绑定快捷方式（脚本及输入方案）。安装本次配套 APK 和模块 ZIP 后，在「设置 → 面具模块 · App 自动执行」配置包名与快捷方式。详见[模块安装与触发规则](./magisk/README.md)。
 
-当前 1.4.7 已内置配套模块 1.1.2，可在「设置 → 面具模块 · App 自动执行 → 安装 / 更新配套模块」导出并打开 Magisk / KernelSU 安装。新增绑定可直接搜索选择手机上的 App；同包名系统分身共用同一方案与策略。输入方案默认使用旧版延时发送，无需填写提示词；也可在编辑方案中选择“等待提示词”。详见[改进清单与配置方式](./AUTOMATION_SAFETY.md)。
+当前 1.4.9 已内置配套模块 1.1.2，可在「设置 → 面具模块 · App 自动执行 → 安装 / 更新配套模块」导出并打开 Magisk / KernelSU 安装。新增绑定可直接搜索选择手机上的 App；同包名系统分身共用同一方案与策略。输入方案默认使用旧版延时发送，无需填写提示词；也可在编辑方案中选择“等待提示词”。详见[改进清单与配置方式](./AUTOMATION_SAFETY.md)。
 
 文件管理中长按普通文件，在菜单中选择“执行”，会校验 SH / ELF 后直接从原目录启动，无需先导入。项目内程序会保留项目身份；库外程序使用原路径并保留相对资源访问。非程序文件与符号链接会被拒绝，已有任务运行时不会并发启动新任务。共享存储中的 SH 使用 `sh` 读取执行；ELF 仍受目标挂载的 `noexec` 限制。
 
@@ -98,16 +111,18 @@
 
 ### 2. 安装测试版
 
-从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.4.7) 下载 `tubing-v1.4.7.apk`，可通过 ADB 覆盖安装并保留数据。
+1.4.9 瘦身测试包为 `dist/tubing-v1.4.9.apk`，已覆盖安装至 NX769J 并启动。
+
+从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.4.9) 下载 `tubing-v1.4.9.apk`，可通过 ADB 覆盖安装并保留数据。
 
 ```bash
-adb install -r tubing-v1.4.7.apk
+adb install -r tubing-v1.4.9.apk
 ```
 
 发布 APK 的 SHA-256：
 
 ```text
-74b2859d5b41eb0b333e370ec2b777eaf813c9179c39549ae62521a3f2021d77
+8e0fd286fbb17677bfd6ba14870b6f3df4cd21ecb952003b8edca686f9fb181a
 ```
 
 ### 3. 完成第一次执行
@@ -180,7 +195,7 @@ app/src/main/java/com/stealth/rootexecutor/
 
 ## 当前状态
 
-`v1.4.7` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选并统一导入 SH/ELF 文件。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
+`v1.4.9` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏、内置 SH 编辑器，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选并统一导入 SH/ELF 文件，以及从其他应用分享导入 ZIP / SH / ELF。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
 
 ## 第三方组件与许可
 

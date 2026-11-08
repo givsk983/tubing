@@ -4,6 +4,7 @@
 
 - Native Kotlin Android application, package `com.stealth.rootexecutor`.
 - `MainActivity` shares the dual-pane file manager with the import picker, including swipe/range selection and batch SH/ELF import. Android's Storage Access Framework (`ACTION_OPEN_DOCUMENT`) remains an alternate import source.
+- `SharedImport` accepts Android SEND / SEND_MULTIPLE / content VIEW intents, resolves stream URIs with ClipData / data fallbacks, and rejects text-only or non-content inputs. MainActivity queues shares until Root authorization and presents explicit per-file import actions. `IncomingFile` copies readable content into bounded private snapshots (512 MiB), identifies ZIP signatures, and reuses the existing ZIP project / SH / ELF validation. No shared URI is passed to the root shell and receiving a share never executes a program.
 - `RootExecutor` owns all privileged file operations. It invokes `su -c` once per operation; commands do not nest `su`.
 - SH and ELF programs share `/data/adb/root_executor` directly; imported records use the `library` identity and runtime header detection chooses the launcher. `logs/` and `tmp/` remain internal subdirectories. Legacy `scripts`/`binaries` records retain their paths and identities for existing shortcuts, presets and history. App cache is only used as an import staging area.
 - Import source preferences select an in-app browser, MT (`GET_CONTENT`, standard/Canary packages) or system DocumentsUI (`OPEN_DOCUMENT`), with an ask-every-time default. File checkboxes are independent native controls, separate from ZIP row actions. Entire-ZIP projects extract to a private staging directory and publish without overwriting existing project folders. Project program identities contain a validated relative path; execution checks every parent directory and uses the program's directory as its working directory.
@@ -11,6 +12,19 @@
 - Directories and target files are checked against symlinks before modification or execution. Only regular files are listed and removable.
 - Scripts are launched with `sh`; ELF imports are checked for ELF magic and launched directly. Every execution re-applies mode 777, verifies it using `stat`, reports SELinux state and checks for a `noexec` mount.
 - Each run writes its output to a persistent log in `logs/`; the UI displays output and the root command's exit status. The manager also exposes log viewing and temporary-file cleanup.
+
+## File row previews
+
+- File icons occupy their own fixed column. `BrowserThumbnails` reads application icons with Android's archive package parser and samples image thumbnails (including EXIF orientation) off the UI thread. ZIP uses a distinct archive-box vector; ordinary, image and APK fallback icons remain flat vectors.
+- Two workers serve only requested rows, coalesce duplicate requests, use a bounded queue and a 128-entry memory cache, and check bindings before updating recycled views. Detached rows cancel queued work; refresh invalidates cached previews. Readable regular files are parsed directly; protected files use bounded, private Root snapshots (64 MiB images, 512 MiB APKs), deleted after decoding. Archive drawables are rasterized before deleting their resource snapshot. Failed/unsupported previews fall back to type icons.
+- `BrowserFileTypes` centralizes `.apk` and numeric download suffix detection, including `.apk.1` and `.akp.1`. Both click/menu actions and Root installation use the same classifier; `pm install` still checks the actual contents and signature.
+
+## Built-in SH editor
+
+- `ShellEditorActivity` is a non-exported screen, entered from a regular `.sh` file's browser menu or the selected script on the execution page. `ShellCodeEditText` uses native input, a pinned line-number gutter, and debounced background lexical highlighting from `ShellSyntax`. No script content is evaluated or rendered as HTML.
+- `ShellScriptStore` bounds Root operations and file size (256 KiB), requires strict UTF-8 text, rejects symlinks and binary controls, and retains BOM and uniform CRLF. Reading checks a metadata + SHA-256 fingerprint around the bounded content snapshot. Saving stages private bytes and checks the original fingerprint before and after producing a verified same-directory backup. Replacement uses a same-directory temporary file and rename, retaining mode, UID/GID and SELinux context; backup failure leaves the original untouched. Fingerprints detect external changes but do not provide an atomic lock against unrelated writers.
+- Back navigation confirms unsaved changes. Private cache files keep large drafts outside Android's saved-state Binder limit; they are removed on normal editor exit. Cache eviction, force-stop and abrupt power loss are not guaranteed recovery paths. Opening the editor holds the application's quick-execution exit path so it cannot terminate an active edit. Saves are unavailable while an execution task is active or preparing.
+- JVM checks cover encoding, lexical offsets, and real POSIX filesystem transactions, including repeated saves, byte-identical backups, external changes and injected backup / rename failures. Android input, gutter placement and enforcing SELinux behavior require device validation.
 
 ## Development plan
 
