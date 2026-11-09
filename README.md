@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img alt="Version v1.4.9" src="https://img.shields.io/badge/version-v1.4.9-28B9CF?style=flat-square"></a>
+  <a href="./CHANGELOG.md"><img alt="Version v1.5.0" src="https://img.shields.io/badge/version-v1.5.0-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/download/v1.4.9/tubing-v1.4.9.apk">下载已发布 APK（1.4.9）</a>
+  <a href="https://github.com/givsk983/tubing/releases/download/v1.5.0/tubing-v1.5.0.apk">下载已发布 APK（1.5.0）</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前源码为 `v1.4.9`，沿用 Debug 签名的瘦身测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前源码为 `v1.5.0`，沿用 Debug 签名的瘦身测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -60,6 +60,8 @@
 内置文件管理器默认浏览下载目录，每个普通文件左侧有独立勾选框，点击可选中或取消，不会打开 ZIP；左右滑动仍可选中，连续右滑可范围选中，再点击底部“导入所选”批量导入。左右栏独立选择，每次导入当前栏的已选文件；进入其他目录会清空该栏选择。SH 和 ELF 统一导入 `/data/adb/root_executor` 脚本库，不再按类型分目录；失败项保留选择并显示原因，成功项不会重复导入，全部成功后返回执行页，不自动运行。
 
 从任一来源选中 ZIP，或点击内置管理器中的 ZIP 文件名，会先显示“ZIP 导入方式”。可以将整个 ZIP 解压为一个项目，项目名称默认 ZIP 文件名去掉 `.zip`，也可手动修改；所有目录、程序和资源保存在 `/data/adb/root_executor/项目名称`，重名时拒绝覆盖。项目内的 SH / ELF 程序会出现在执行列表中，并从程序所在目录启动。也可选择“浏览并选择包内文件”，继续使用原有预览与挑选导入功能。ZIP 与普通文件需分开选择。
+
+1.5.0 起，导入新版 ZIP 时可选择“更新已有项目”，再选择目标项目并确认。按相对路径合并，例如新版的 `bin/run.sh` 会替换已有的 `bin/run.sh`，新路径会添加，ZIP 未包含的配置继续保留。文件与目录同路径冲突或目标路径有符号链接时停止更新。
 
 “更多导入”可临时切换来源或选择同步路径；底部导航栏上滑可使用收藏路径。目录与符号链接不能作为普通待导入文件，其他类型文件导入时显示错误。
 
@@ -111,18 +113,18 @@
 
 ### 2. 安装测试版
 
-1.4.9 瘦身测试包为 `dist/tubing-v1.4.9.apk`，已覆盖安装至 NX769J 并启动。
+本地 1.5.0 瘦身测试包为 `dist/tubing-v1.5.0.apk`。
 
-从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.4.9) 下载 `tubing-v1.4.9.apk`，可通过 ADB 覆盖安装并保留数据。
+从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.5.0) 下载 `tubing-v1.5.0.apk`，可通过 ADB 覆盖安装并保留数据。
 
 ```bash
-adb install -r tubing-v1.4.9.apk
+adb install -r tubing-v1.5.0.apk
 ```
 
 发布 APK 的 SHA-256：
 
 ```text
-8e0fd286fbb17677bfd6ba14870b6f3df4cd21ecb952003b8edca686f9fb181a
+4b027daf4eedc8c2836f22de125d3400766b405855948aa913ee7df51a1904e5
 ```
 
 ### 3. 完成第一次执行

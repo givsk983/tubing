@@ -189,31 +189,84 @@ class RootExecutor {
         }
     }
 
-    /** Preserve the whole archive as one project, publishing only after extraction succeeds. */
-    fun importZipProject(archive: File, projectName: String): String {
+    /** Prepare a complete tree before publishing it at the project's stable path. */
+    fun importZipProject(archive: File, projectName: String, update: Boolean = false): String {
         require(ProjectImport.validName(projectName)) { "项目名称无效，请勿使用系统目录名、隐藏名称或路径分隔符" }
         val output = File(archive.parentFile, "project-${UUID.randomUUID()}")
         try {
             val count = ZipExtractor.extract(archive, output)
-            val stage = ".tubing-project-${UUID.randomUUID()}"
-            val target = quote("./$projectName")
-            val staged = quote("./$stage")
-            val response = run("""
-                set -eu
-                [ -d ${quote(base)} ] && [ ! -L ${quote(base)} ] || { echo '脚本库目录异常'; exit 32; }
-                cd -- ${quote(base)}
-                [ ! -e $target ] && [ ! -L $target ] || { echo '项目名称已存在，请更换名称'; exit 49; }
-                mkdir -- $staged
-                trap ${quote("rm -rf -- $staged")} EXIT
-                cp -R -- ${quote(output.absolutePath + "/.")} $staged/
-                chmod -R 755 $staged
-                mv -nT -- $staged $target
-                [ ! -e $staged ] && [ ! -L $staged ] || { echo '项目名称已被占用，已取消导入'; exit 49; }
-                trap - EXIT
-            """.trimIndent())
+            val response = run(projectImportCommand(base, output, projectName, update))
             check(response.code == 0) { response.output.ifBlank { "无法保存项目" } }
-            return "已导入 $count 个文件\n$base/$projectName"
+            return "已${if (update) "合并" else "导入"} $count 个文件\n$base/$projectName"
         } finally { output.deleteRecursively() }
+    }
+
+    internal fun projectImportCommand(parent: String, output: File, projectName: String, update: Boolean): String {
+        require(ProjectImport.validName(projectName))
+        val stage = "./.tubing-project-${UUID.randomUUID()}"
+        val lock = "./.tubing-project-lock-${UUID.nameUUIDFromBytes(projectName.toByteArray(Charsets.UTF_8))}"
+        // Check paths only in the private copy. Removing matching files before copying
+        // also avoids changing other files that share their inode.
+        val checkOverlay = """
+            set -eu
+            source=$1; merged=$2; replace=$3; shift 3
+            for entry do
+                relative=${'$'}{entry#"${'$'}source"/}
+                destination="${'$'}merged/${'$'}relative"
+                if [ -L "${'$'}destination" ] ||
+                    { [ -d "${'$'}entry" ] && [ -e "${'$'}destination" ] && [ ! -d "${'$'}destination" ]; } ||
+                    { [ -f "${'$'}entry" ] && [ -e "${'$'}destination" ] && [ ! -f "${'$'}destination" ]; }; then
+                    printf '项目路径冲突：%s\n' "${'$'}relative"
+                    exit 1
+                fi
+                if [ "${'$'}replace" = 1 ] && [ -f "${'$'}entry" ] && [ -f "${'$'}destination" ]; then
+                    rm -- "${'$'}destination"
+                fi
+            done
+        """.trimIndent()
+        return """
+                set -eu -o pipefail
+                [ -d ${quote(parent)} ] && [ ! -L ${quote(parent)} ] || { echo '脚本库目录异常'; exit 32; }
+                cd -- ${quote(parent)}
+                target=${quote("./$projectName")}
+                stage=${quote(stage)}
+                lock=${quote(lock)}
+                source=${quote(output.absolutePath)}
+                merged="${'$'}stage/merged"
+                original="${'$'}stage/original"
+                committed=0
+                mkdir -- "${'$'}lock" || { echo '此项目已有导入操作，请稍后重试'; exit 49; }
+                cleanup() {
+                    if [ "${'$'}committed" = 0 ] && [ -d "${'$'}original" ]; then
+                        mv -nT -- "${'$'}original" "${'$'}target" || :
+                        if [ -d "${'$'}original" ]; then
+                            printf '无法恢复原项目，备份保留在 %s/%s\n' "${'$'}PWD" "${'$'}original"
+                            rmdir -- "${'$'}lock"
+                            return
+                        fi
+                    fi
+                    rm -rf -- "${'$'}stage"
+                    rmdir -- "${'$'}lock"
+                }
+                trap cleanup EXIT
+                trap 'exit 1' HUP INT TERM
+                ${if (update) """
+                [ -d "${'$'}target" ] && [ ! -L "${'$'}target" ] || { echo '已有项目不存在或为符号链接'; exit 49; }
+                mkdir -- "${'$'}stage"
+                cp -a -- "${'$'}target" "${'$'}merged"
+                find "${'$'}source" -mindepth 1 -print0 | xargs -0 sh -c ${quote(checkOverlay)} sh "${'$'}source" "${'$'}merged" 0
+                find "${'$'}source" -type f -print0 | xargs -0 sh -c ${quote(checkOverlay)} sh "${'$'}source" "${'$'}merged" 1
+                """ else """
+                [ ! -e "${'$'}target" ] && [ ! -L "${'$'}target" ] || { echo '项目名称已存在，请更换名称或选择更新已有项目'; exit 49; }
+                mkdir -p -- "${'$'}merged"
+                """}
+                chmod -R 755 "${'$'}source"
+                cp -R -- "${'$'}source/." "${'$'}merged/"
+                ${if (update) """mv -T -- "${'$'}target" "${'$'}original"""" else ""}
+                mv -nT -- "${'$'}merged" "${'$'}target"
+                [ ! -e "${'$'}merged" ] || { echo '项目名称已被占用，已取消导入'; exit 49; }
+                committed=1
+        """.trimIndent()
     }
 
     /** Publish just the selected file/folder names directly into the requested directory. */

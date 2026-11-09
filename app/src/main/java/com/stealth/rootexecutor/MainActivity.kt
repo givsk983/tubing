@@ -1499,6 +1499,10 @@ class MainActivity : Activity() {
                     handedOff = true; dialog.dismiss()
                     showProjectImportDialog(archive, entry.name)
                 })
+                addView(optionCard("更新已有项目", "按项目内路径替换同名文件、加入新文件，保留 ZIP 中没有的文件") {
+                    handedOff = true; dialog.dismiss()
+                    chooseProjectToUpdate(archive, entry.name)
+                })
                 addView(optionCard("浏览并选择包内文件", "预览内容，只导入选中的 SH / ELF 文件") {
                     handedOff = true; dialog.dismiss()
                     showZipBrowser(left, entry, archive, items, importMode = true)
@@ -1523,34 +1527,97 @@ class MainActivity : Activity() {
                 if (!ProjectImport.validName(name)) projectName.error = "请输入有效项目名称，勿使用路径或系统目录名"
                 else {
                     handedOff = true; dialog.dismiss()
-                    val progress = styledDialog("正在导入项目", name, { text("解压完整 ZIP 并保存到脚本库，请稍候…") }, { emptyList() })
-                    progress.setCancelable(false); progress.setCanceledOnTouchOutside(false)
-                    io.execute {
-                        val result = runCatching { root.importZipProject(archive, name) }
-                        runOnUiThread {
-                            if (!isDestroyed) {
-                                progress.dismiss()
-                                result.fold({ details ->
-                                    browserImportMode = false
-                                    leftSelection.clear(); rightSelection.clear()
-                                    leftPath = "${root.managedRoot}/$name"
-                                    lastRecordedLeftPath = null
-                                    leftEntries = emptyList()
-                                    activeBrowserLeft = true; tab = 1; showTab()
-                                    message("项目导入完成", details)
-                                    discardZipSnapshot(archive)
-                                }, { error ->
-                                    // Keep the snapshot so a conflicting name can be corrected without picking again.
-                                    Toast.makeText(this, error.message ?: "无法导入 ZIP 项目", Toast.LENGTH_LONG).show()
-                                    showProjectImportDialog(archive, "$name.zip")
-                                })
-                            } else discardZipSnapshot(archive)
-                        }
-                    }
+                    saveZipProject(archive, name, update = false) { showProjectImportDialog(archive, "$name.zip") }
                 }
             }
         ) })
         naming.setOnDismissListener { if (!handedOff) discardZipSnapshot(archive) }
+    }
+
+    private fun chooseProjectToUpdate(archive: File, zipName: String) {
+        val loading = styledDialog("正在读取项目", zipName, { text("正在读取脚本库…") }, { emptyList() })
+        loading.setCancelable(false)
+        io.execute {
+            val result = runCatching {
+                val (response, entries) = root.browse(root.managedRoot)
+                check(response.code == 0) { response.output.ifBlank { "无法读取项目列表" } }
+                entries.filter { it.type == "d" && ProjectImport.validName(it.name) }
+                    .map { it.name }.sorted()
+            }
+            runOnUiThread {
+                if (isDestroyed || isFinishing) {
+                    discardZipSnapshot(archive)
+                    return@runOnUiThread
+                }
+                loading.dismiss()
+                result.fold({ projects ->
+                    var handedOff = false
+                    val chooser = styledDialog("选择要更新的项目", zipName, { dialog ->
+                        column().apply {
+                            if (projects.isEmpty()) addView(text("没有可更新的项目"))
+                            projects.forEach { name ->
+                                addView(optionCard(name, "选择后确认替换同路径文件") {
+                                    handedOff = true
+                                    dialog.dismiss()
+                                    confirmProjectUpdate(archive, zipName, name)
+                                })
+                            }
+                        }
+                    }, { dialog -> listOf("取消" to { dialog.dismiss() }) })
+                    chooser.setOnDismissListener { if (!handedOff) discardZipSnapshot(archive) }
+                }, { error ->
+                    message("无法读取项目", error.message ?: "请重试")
+                    discardZipSnapshot(archive)
+                })
+            }
+        }
+    }
+
+    private fun confirmProjectUpdate(archive: File, zipName: String, name: String) {
+        var handedOff = false
+        val confirmation = styledDialog("更新已有项目", name, {
+            text("从 $zipName 导入。相同路径的文件将被新版替换，新文件会加入，ZIP 中没有的旧文件和配置会保留。")
+        }, { dialog -> listOf(
+            "返回" to {
+                handedOff = true; dialog.dismiss()
+                chooseProjectToUpdate(archive, zipName)
+            },
+            "确认更新" to {
+                handedOff = true; dialog.dismiss()
+                saveZipProject(archive, name, update = true) { chooseProjectToUpdate(archive, zipName) }
+            }
+        ) })
+        confirmation.setOnDismissListener { if (!handedOff) discardZipSnapshot(archive) }
+    }
+
+    private fun saveZipProject(archive: File, name: String, update: Boolean, retry: () -> Unit) {
+        val action = if (update) "更新" else "导入"
+        val progress = styledDialog("正在${action}项目", name, { text("正在解压并保存项目，请稍候…") }, { emptyList() })
+        progress.setCancelable(false)
+        io.execute {
+            val result = runCatching { root.importZipProject(archive, name, update) }
+            runOnUiThread {
+                if (isDestroyed || isFinishing) {
+                    discardZipSnapshot(archive)
+                    return@runOnUiThread
+                }
+                progress.dismiss()
+                result.fold({ details ->
+                    browserImportMode = false
+                    directoryCache.clear(); thumbnails.clear()
+                    leftSelection.clear(); rightSelection.clear()
+                    leftPath = "${root.managedRoot}/$name"
+                    lastRecordedLeftPath = null
+                    leftEntries = emptyList()
+                    activeBrowserLeft = true; tab = 1; showTab()
+                    message("项目${action}完成", details)
+                    discardZipSnapshot(archive)
+                }, { error ->
+                    Toast.makeText(this, error.message ?: "无法${action} ZIP 项目", Toast.LENGTH_LONG).show()
+                    retry()
+                })
+            }
+        }
     }
 
     private fun importZipSelection(archive: File, selection: Set<String>, done: () -> Unit) {
