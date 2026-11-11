@@ -15,6 +15,10 @@ internal object QuickExecutionExit {
     private val main = Handler(Looper.getMainLooper())
     private var editors = 0
     private var imports = 0
+    private var updates = 0
+
+    fun updateOpened() { updates++; cancel() }
+    fun updateClosed() { updates = (updates - 1).coerceAtLeast(0) }
 
     fun editorOpened() { editors++; cancel() }
     fun editorClosed() { editors = (editors - 1).coerceAtLeast(0) }
@@ -24,7 +28,7 @@ internal object QuickExecutionExit {
     fun cancel() { request.cancel() }
     fun pending() = request.matches(SessionState.executionId)
     fun complete(context: Context, id: String, shortcut: Boolean) {
-        request.complete(id, shortcut, editors == 0 && imports == 0 && context.getSharedPreferences("settings", Context.MODE_PRIVATE).getBoolean(SETTING, false))
+        request.complete(id, shortcut, editors == 0 && imports == 0 && updates == 0 && context.getSharedPreferences("settings", Context.MODE_PRIVATE).getBoolean(SETTING, false))
     }
 
     fun afterServiceDestroyed(context: Context) {
@@ -32,7 +36,7 @@ internal object QuickExecutionExit {
         if (!request.matches(id)) return
         val app = context.applicationContext
         main.postDelayed({
-            if (editors > 0 || imports > 0) { request.cancel(); return@postDelayed }
+            if (editors > 0 || imports > 0 || updates > 0) { request.cancel(); return@postDelayed }
             if (!request.canExit(SessionState.executionId,
                     app.getSharedPreferences("settings", Context.MODE_PRIVATE).getBoolean(SETTING, false),
                     SessionState.running, SessionState.startGate.isPreparing(), ExecutionService.active != null) ||

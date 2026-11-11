@@ -41,7 +41,8 @@ class CustomPackageTest {
             Triple("manifest", "package", original),
             Triple("permission", "name", "$original.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"),
             Triple("uses-permission", "name", "$original.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"),
-            Triple("provider", "authorities", "$original.androidx-startup")
+            Triple("provider", "authorities", "$original.androidx-startup"),
+            Triple("provider", "authorities", "$original.updates")
         )
         assertTrue(baseline.containsAll(renamedAttributes))
         var bytes = manifest()

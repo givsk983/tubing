@@ -47,7 +47,9 @@ internal data class AppRelease(
     val pageUrl: String,
     val apkUrl: String?,
     val draft: Boolean = false,
-    val prerelease: Boolean = false
+    val prerelease: Boolean = false,
+    val apkSize: Long = 0,
+    val apkSha256: String? = null
 )
 
 internal object AppUpdates {

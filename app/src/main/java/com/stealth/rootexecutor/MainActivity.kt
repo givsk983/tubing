@@ -3744,13 +3744,19 @@ class MainActivity : Activity() {
                                 addView(text(release.notes.ifBlank { "此版本暂未提供更新说明。" }, 14f, mutedColor()).apply {
                                     setTextIsSelectable(true)
                                 })
-                                addView(button("查看 GitHub 发布页") { openExternalLink(release.pageUrl) }, LinearLayout.LayoutParams(-1, dp(50)))
+                                addView(text(if (release.apkUrl != null) "安装包将在应用内下载，校验后由系统确认安装，保留现有数据。"
+                                    else "此版本尚未上传 APK，请稍后重新检查。", 13f, mutedColor()))
                             }
                         }, { dialog -> listOf(
                             "稍后" to { dialog.dismiss() },
-                            (if (release.apkUrl != null) "下载 APK" else "前往发布页") to {
+                            (if (release.apkUrl != null) "立即更新" else "重新检查") to {
                                 dialog.dismiss()
-                                openExternalLink(release.apkUrl ?: release.pageUrl)
+                                if (release.apkUrl == null) checkForUpdates()
+                                else if (SessionState.running || SessionState.startGate.isPreparing())
+                                    message("请先结束任务", "执行结束后再安装应用更新。")
+                                else startActivity(Intent(this, AppUpdateActivity::class.java)
+                                    .putExtra("tag", release.tag).putExtra("url", release.apkUrl)
+                                    .putExtra("size", release.apkSize).putExtra("sha256", release.apkSha256))
                             }
                         ) })
                     }
@@ -3763,7 +3769,7 @@ class MainActivity : Activity() {
                     }
                     styledDialog("检查更新失败", "", { text(reason, 14f) }, { dialog -> listOf(
                         "关闭" to { dialog.dismiss() },
-                        "查看发布页" to { dialog.dismiss(); openExternalLink(AppUpdates.RELEASES_URL) }
+                        "重试" to { dialog.dismiss(); checkForUpdates() }
                     ) })
                 })
             }

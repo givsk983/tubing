@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img alt="Version v1.5.0" src="https://img.shields.io/badge/version-v1.5.0-28B9CF?style=flat-square"></a>
+  <a href="./CHANGELOG.md"><img alt="Version v1.5.1" src="https://img.shields.io/badge/version-v1.5.1-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/download/v1.5.0/tubing-v1.5.0.apk">下载已发布 APK（1.5.0）</a>
+  <a href="https://github.com/givsk983/tubing/releases/download/v1.5.1/tubing-v1.5.1.apk">下载已发布 APK（1.5.1）</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前源码为 `v1.5.0`，沿用 Debug 签名的瘦身测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前源码为 `v1.5.1`，沿用 Debug 签名的瘦身测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -113,18 +113,20 @@
 
 ### 2. 安装测试版
 
-本地 1.5.0 瘦身测试包为 `dist/tubing-v1.5.0.apk`。
+本地 1.5.1 瘦身测试包为 `dist/tubing-v1.5.1.apk`。
 
-从 [GitHub Release](https://github.com/givsk983/tubing/releases/tag/v1.5.0) 下载 `tubing-v1.5.0.apk`，可通过 ADB 覆盖安装并保留数据。
+1.5.1 起可在「设置 → 检查更新 → 立即更新」中下载并安装新版，全程无需浏览器。首次更新需要允许 Tubing 安装未知应用，授权返回后继续由系统确认安装；取消安装可在当前更新页重试。安装前会校验发布摘要（提供时）、APK 签名、包名和版本。自定义包名副本需由原应用重新生成对应新版副本。
+
+已发布的安装包见 [GitHub Release](https://github.com/givsk983/tubing/releases)。本地 1.5.1 测试包可通过 ADB 覆盖安装并保留数据：
 
 ```bash
-adb install -r tubing-v1.5.0.apk
+adb install -r tubing-v1.5.1.apk
 ```
 
-发布 APK 的 SHA-256：
+本地 1.5.1 APK 的 SHA-256：
 
 ```text
-4b027daf4eedc8c2836f22de125d3400766b405855948aa913ee7df51a1904e5
+d23764841afb0efada385ea11fd86e7c1424bf5487d3a779344f0f1dab726b71
 ```
 
 ### 3. 完成第一次执行

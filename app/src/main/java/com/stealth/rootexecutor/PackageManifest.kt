@@ -67,7 +67,7 @@ internal object PackageManifest {
             val value = bytes.toString(if (utf8) Charsets.UTF_8 else Charsets.UTF_16LE)
             val updated = when (value) {
                 old -> { changed = true; replacement }
-                receiverPermission, startupAuthority -> replacement + value.removePrefix(old)
+                receiverPermission, startupAuthority, "$old.updates" -> replacement + value.removePrefix(old)
                 else -> value
             }
             offsets[index] = data.size()

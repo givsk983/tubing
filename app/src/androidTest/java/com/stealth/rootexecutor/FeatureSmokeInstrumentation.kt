@@ -756,20 +756,35 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             val fixture = """[
                 {"tag_name":"v9.0.0","draft":true,"html_url":"https://github.com/givsk983/tubing/releases/tag/v9.0.0"},
                 {"tag_name":"v1.4.2","prerelease":true,"body":null,"html_url":"https://github.com/givsk983/tubing/releases/tag/v1.4.2",
-                 "assets":[{"name":"tubing-v1.4.2.apk","state":"uploaded","browser_download_url":"https://github.com/givsk983/tubing/releases/download/v1.4.2/tubing-v1.4.2.apk"}]},
+                 "assets":[{"name":"tubing-v1.4.2.apk","state":"uploaded","size":12345,"digest":"sha256:${"a".repeat(64)}","browser_download_url":"https://github.com/givsk983/tubing/releases/download/v1.4.2/tubing-v1.4.2.apk"}]},
                 {"tag_name":"v1.4.1","html_url":"https://github.com/givsk983/tubing/releases/tag/v1.4.1"}
             ]"""
             val release = checkNotNull(GitHubUpdateChecker.parse(fixture))
             check(release.tag == "v1.4.2" && release.prerelease && release.notes.isEmpty())
             check(release.apkUrl?.endsWith("/tubing-v1.4.2.apk") == true)
+            check(release.apkSize == 12345L && release.apkSha256 == "a".repeat(64))
             check(AppUpdates.isNewer(release, "1.4.1"))
             check(GitHubUpdateChecker.parse("[]") == null)
             check(runCatching { GitHubUpdateChecker.parse("unavailable") }.isFailure)
             val withoutApk = checkNotNull(GitHubUpdateChecker.parse("""[{"tag_name":"v1.4.2","html_url":"https://github.com/givsk983/tubing/releases/tag/v1.4.2"}]"""))
             check(withoutApk.apkUrl == null)
+            val directory = File(targetContext.cacheDir, "updates").apply { mkdirs() }
+            val apk = File.createTempFile("provider-check-", ".apk", directory)
+            try {
+                File(targetContext.applicationInfo.sourceDir).copyTo(apk, overwrite = true)
+                val uri = androidx.core.content.FileProvider.getUriForFile(targetContext, "${targetContext.packageName}.updates", apk)
+                check(uri.scheme == "content")
+                check(targetContext.contentResolver.getType(uri) == "application/vnd.android.package-archive")
+                check(targetContext.contentResolver.openInputStream(uri)!!.use { it.read() } == 0x50)
+                val installed = targetContext.packageManager.getPackageInfo(targetContext.packageName, 0)
+                val rejected = runCatching { UpdateApk.verify(targetContext, apk, installed.versionName!!) }.exceptionOrNull()
+                check(rejected?.message?.contains("内部版本码") == true) { "Signed local APK did not reach version-code guard: $rejected" }
+                apk.appendBytes(byteArrayOf(1, 2, 3))
+                check(runCatching { UpdateApk.verify(targetContext, apk, installed.versionName!!) }.isFailure)
+            } finally { apk.delete() }
             val online = checkNotNull(GitHubUpdateChecker.check()) { "GitHub has no published releases" }
             check(online.apkUrl != null) { "Published APK was not recognized" }
-            "Update parser: draft filtering, prereleases, APK matching, empty/malformed data, missing APK fallback passed.\nGitHub HTTPS check: ${online.tag}, APK ${online.apkUrl}\n"
+            "Update parser, size/digest metadata, private APK provider, signature verification and version-code guard passed.\nGitHub HTTPS check: ${online.tag}, APK ${online.apkUrl}\n"
         }
         finish(if (result.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
             putString("stream", result.getOrElse { it.stackTraceToString() })

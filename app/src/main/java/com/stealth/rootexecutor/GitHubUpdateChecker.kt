@@ -29,7 +29,7 @@ internal object GitHubUpdateChecker {
                 while (true) {
                     val count = input.read(buffer)
                     if (count < 0) break
-                    check(output.size() + count <= 2 * 1024 * 1024) { "GitHub 返回内容过大，请前往发布页查看。" }
+                    check(output.size() + count <= 2 * 1024 * 1024) { "GitHub 返回内容过大，请稍后重试。" }
                     output.write(buffer, 0, count)
                 }
                 output.toByteArray()
@@ -53,7 +53,9 @@ internal object GitHubUpdateChecker {
             }
             AppRelease(tag, release.optString("name").ifBlank { tag }, if (release.isNull("body")) "" else release.optString("body"),
                 release.optString("html_url"), apk?.optString("browser_download_url"),
-                release.optBoolean("draft"), release.optBoolean("prerelease"))
+                release.optBoolean("draft"), release.optBoolean("prerelease"),
+                apk?.optLong("size") ?: 0,
+                apk?.optString("digest")?.takeIf { it.startsWith("sha256:") }?.removePrefix("sha256:"))
         })
     }
 }
