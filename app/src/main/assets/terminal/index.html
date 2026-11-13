@@ -4,6 +4,7 @@ const term=new Terminal({cursorBlink:true,convertEol:false,scrollback:5000,fontS
 term.open(document.getElementById('terminal'));
 term.onData(data=>Android.send(data));
 function fit(){const cell=term._core._renderService.dimensions.css.cell;const viewport=document.getElementById('terminal');const visibleHeight=Math.min(viewport.clientHeight,window.visualViewport?.height??viewport.clientHeight);if(!cell.width||!cell.height||!viewport.clientWidth||!visibleHeight)return;const cols=Math.max(10,Math.floor((viewport.clientWidth-16)/cell.width));const rows=Math.max(2,Math.floor((visibleHeight-16)/cell.height));term.resize(cols,rows);term.scrollToBottom();Android.resize(cols,rows)}
-window.feed=text=>term.write(text);window.setMode=mode=>{term.options.convertEol=mode==='pipe'};window.setSize=size=>{term.options.fontSize=size;setTimeout(fit,0)};window.key=data=>{Android.send(data);term.focus()};
+window.resetOutput=()=>term.write('',()=>term.reset());window.clearOutput=()=>term.write('\x18\x1b[0m',()=>term.clear());
+window.feed=(text,id)=>term.write(text,()=>{if(id!==undefined)Android.outputConsumed(id)});window.setMode=mode=>{term.options.convertEol=mode==='pipe'};window.setSize=size=>{term.options.fontSize=size;setTimeout(fit,0)};window.key=data=>{Android.send(data);term.focus()};
 new ResizeObserver(fit).observe(document.getElementById('terminal'));window.visualViewport?.addEventListener('resize',()=>requestAnimationFrame(fit));window.addEventListener('resize',()=>requestAnimationFrame(fit));document.getElementById('terminal').addEventListener('click',()=>term.focus());setTimeout(()=>{fit();Android.ready()},100);
 </script></body></html>

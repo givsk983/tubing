@@ -1,3 +1,15 @@
+# Tubing 1.5.2 验证
+
+- App 版本 1.5.2（versionCode 27），内置模块保持 1.1.2。`testDebugUnitTest` 共 161 项通过，0 失败、0 错误、0 跳过；Debug、Optimized、AndroidTest 构建通过；`lintOptimized` 为 0 错误、33 警告。`git diff --check` 通过。
+- 新增 JVM 检查覆盖左右栏取消隔离、已投递旧回调失效、慢 WebView 消费确认、4 MiB 输出缓存上限、CSI / OSC / DCS 跨回调、超长未闭合控制字符串、Unicode 代理对跨生产回调、清屏与新会话重置，以及日志大小 / 时间刷新阈值和日志上限。
+- NX769J（Android 16）`optimizations_only=true` 通过：取消真实 Root 查询后，Shell 与 sleep 子进程在 101 ms 内停止；中文与引号文件名扫描、超时退出通过；真实 xterm 在 4 MiB 刷屏及超长分段 OSC 后显示 Unicode 尾部，消费确认与颜色恢复正常，旧队列内容未越过新会话重置。编辑器 Activity 重建后，未保存中文 / emoji 草稿和光标恢复，带 BOM / CRLF 的原文件字节保持不变。
+- 首轮真机取消检查发现 Android `timeout` 会另建脚本进程组，已改用 Root Shell 的 `read -t` 守护并复测父子进程退出。旧项目选择器测试中的 emoji 文案断言已适配独立矢量图标；目录性能测试已适配拆分后的加载控制器。
+- 现有完整设备冒烟检查通过：ZIP 项目与资源、导入与原路径执行、旧 scripts / binaries 身份、Pipe / PTY、执行前权限恢复、ZIP 复选框、最近目录和分层项目选择器。分享检查通过 SEND / SEND_MULTIPLE / VIEW、URI 回退与去重、非法输入拒绝及 12 种 Manifest 匹配。更新设备检查通过发布摘要解析、私有 APK URI、签名、同版本与损坏包拒绝，并成功读取 GitHub 正式发布信息。
+- 同机 Debug 目录基准（各一组，不作为严格跨版本对照）：1,000 文件 Root 扫描 171 ms / 导航到首帧前 200 ms / 滚到底部 17 ms / 范围选择更新 5 ms；5,000 文件分别为 453 / 526 / 14 / 20 ms。缓存目录界面准备 4 ms、无缓存加载界面准备 7 ms，另一栏保持不变，过期结果被忽略。
+- 最终 `dist/tubing-v1.5.2.apk` 为 1,223,822 字节，版本 1.5.2 / 27；APK v2 签名、4 字节 / 原生库 16 KiB 对齐校验通过，签名证书与 1.5.1 一致。SHA-256：`3212b5227b2d72a500f90c7d22eff8d3ce988277563afc91e0fe7794e86de7e8`。
+- 已按 adb-phone-install 技能在 NX769J 保留数据覆盖安装最终瘦身 APK，解析启动入口后成功冷启动，系统确认前台为 MainActivity、版本为 1.5.2 / 27；最终界面截图保存在 `app/build/reports/1.5.2-device.png`。
+- 实际进程被系统杀死后的草稿恢复、不同 Root 管理器 / OEM、首次未知来源授权与已发布新版的系统确认安装全流程，仍需后续验收；本轮编辑器检查覆盖 Activity 重建。没有发布 GitHub Release；README 保留当前已发布 1.5.1 的下载链接。
+
 # Tubing 1.5.1 验证
 
 - App 版本 1.5.1（versionCode 26），内置模块保持 1.1.2。Debug、Optimized 和 AndroidTest 构建通过；146 项 JVM 测试通过，0 失败、0 错误、0 跳过；`lintOptimized` 为 0 错误、33 警告。

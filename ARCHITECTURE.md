@@ -11,7 +11,15 @@
 - Imported names retain Unicode letters/numbers (including Chinese), spaces and a conservative punctuation allowlist, and are suffixed with a random identifier. Shell arguments are single-quote escaped.
 - Directories and target files are checked against symlinks before modification or execution. Only regular files are listed and removable.
 - Scripts are launched with `sh`; ELF imports are checked for ELF magic and launched directly. Every execution re-applies mode 777, verifies it using `stat`, reports SELinux state and checks for a `noexec` mount.
-- Each run writes its output to a persistent log in `logs/`; the UI displays output and the root command's exit status. The manager also exposes log viewing and temporary-file cleanup.
+- When logging is enabled and no sensitive preset is used, runs save output to `logs/`; the UI displays output and the root command's exit status. The manager also exposes log viewing and temporary-file cleanup.
+
+## Directory requests and terminal flow control
+
+- `BrowserDirectoryLoader` owns two read workers and independent request versions for both panes. New navigation interrupts that pane's previous read, and callbacks recheck their version on the UI thread. Closing the screen invalidates and cancels all reads.
+- `CancellableCommand` runs read-only directory scans in a separate Root process group. A Root-side stdin guard uses `read -t` to kill the group on pipe closure or timeout, including descendants. Android `timeout` is deliberately excluded from this group: some implementations create a different group for the command. Scans retain the 10-second deadline, 8 Mi-character complete-output cap and shell-quoted paths.
+- `TerminalOutputBuffer` keeps display history and pending output bounded, tracks CSI/OSC/DCS and related control strings across callbacks, and only resumes retained text at a safe ANSI/Unicode boundary. Oversized unterminated strings are discarded through their terminator. Eviction emits CAN, SGR reset and a visible omission notice; it does not alter saved logs.
+- `TerminalOutputPump` sends at most 32,768 UTF-16 code units per write, with only one write awaiting xterm's completion callback. The queue remains bounded when WebView is slow. Reset generations reject stale acknowledgements, and JS clear/reset operations are sequenced after earlier writes.
+- `BatchedSessionLog` keeps the 131,072-character cap, flushes after 8,192 pending characters or the next output after one second, and closes the buffered writer at completion. `UpdateCheckController` owns update-check state and navigation, while MainActivity renders the existing themed dialogs.
 
 ## File row previews
 

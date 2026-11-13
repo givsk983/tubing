@@ -26,6 +26,7 @@ import java.util.zip.ZipOutputStream
 /** Device-only checks against the actual Android ZIP, root shell and execution backends. */
 class FeatureSmokeInstrumentation : Instrumentation() {
     private var cleanupFixtureId: String? = null
+    private var optimizationsOnly = false
     private var updatesOnly = false
     private var scrollingOnly = false
     private var browserPerformanceOnly = false
@@ -39,6 +40,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         cleanupFixtureId = arguments?.getString("cleanup_fixture_id")
+        optimizationsOnly = arguments?.getString("optimizations_only") == "true"
         updatesOnly = arguments?.getString("updates_only") == "true"
         scrollingOnly = arguments?.getString("scrolling_only") == "true"
         browserPerformanceOnly = arguments?.getString("browser_performance_only") == "true"
@@ -53,6 +55,14 @@ class FeatureSmokeInstrumentation : Instrumentation() {
     }
 
     override fun onStart() {
+        if (optimizationsOnly) {
+            val result = runCatching {
+                OptimizationChecks.run(targetContext, ::onUi, ::launchMainActivity) + "\n" + checkEditorRecreation()
+            }
+            finish(if (result.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED,
+                Bundle().apply { putString("optimizations", result.getOrElse { it.stackTraceToString() }) })
+            return
+        }
         if (sharedImportsOnly) {
             try { finish(Activity.RESULT_OK, Bundle().apply { putString("shared_imports", SharedImportChecks.run(targetContext)) }) }
             catch (error: Throwable) { finish(Activity.RESULT_CANCELED, Bundle().apply { putString("shared_import_error", error.stackTraceToString()) }) }
@@ -363,7 +373,6 @@ class FeatureSmokeInstrumentation : Instrumentation() {
         val releaseReads = CountDownLatch(1)
         val childStarted = CountDownLatch(1)
         var activity: Activity? = null
-        var requests: BrowserRequestTokens? = null
         val fixture = File(targetContext.cacheDir, "browser-benchmark-${UUID.randomUUID()}")
         val result = runCatching {
             val screen = launchMainActivity()
@@ -395,7 +404,6 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             val render = MainActivity::class.java.getDeclaredMethod("fileManagerPage").apply { isAccessible = true }
             val navigate = MainActivity::class.java.getDeclaredMethod("navigateBrowser", Boolean::class.javaPrimitiveType, String::class.java).apply { isAccessible = true }
             onUi {
-                requests = field("browserRequests").get(screen) as BrowserRequestTokens
                 field("browserDirectoryReader").set(screen, read)
                 field("tab").setInt(screen, 1)
                 field("leftPath").set(screen, parent); field("rightPath").set(screen, other)
@@ -438,7 +446,7 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                 check(descendants(cachedPane).filterIsInstance<TextView>().none { it.text == "正在读取目录…" })
                 check((field("browserPanes").get(screen) as ViewGroup).getChildAt(2) === otherPane)
             }
-            // Complete the obsolete child read and the current parent read together.
+            // The obsolete child read was interrupted; release the current parent validation.
             releaseReads.countDown()
             var updated = false
             repeat(80) {
@@ -531,7 +539,6 @@ class FeatureSmokeInstrumentation : Instrumentation() {
             report.toString()
         }
         releaseReads.countDown()
-        requests?.invalidateAll()
         activity?.let { screen -> onUi { screen.finish() } }
         fixture.deleteRecursively()
         preferences.edit().apply {
@@ -791,6 +798,46 @@ class FeatureSmokeInstrumentation : Instrumentation() {
         })
     }
 
+    private fun checkEditorRecreation(): String {
+        val file = File(targetContext.cacheDir, "recovery-${UUID.randomUUID()}.sh")
+        val original = "\uFEFF#!/system/bin/sh\r\necho original\r\n".toByteArray(Charsets.UTF_8)
+        file.writeBytes(original)
+        var activity: Activity? = null
+        try {
+            val monitor = addMonitor(ShellEditorActivity::class.java.name, null, false)
+            try {
+                targetContext.startActivity(Intent(targetContext, ShellEditorActivity::class.java)
+                    .putExtra("path", file.path).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                activity = checkNotNull(monitor.waitForActivityWithTimeout(10_000))
+            } finally { removeMonitor(monitor) }
+            val editorField = ShellEditorActivity::class.java.getDeclaredField("editor").apply { isAccessible = true }
+            var loaded = false
+            repeat(100) {
+                if (!loaded) {
+                    onUi { loaded = (editorField.get(activity) as ShellCodeEditText).isEnabled }
+                    if (!loaded) SystemClock.sleep(50)
+                }
+            }
+            check(loaded) { "Editor did not load the temporary script" }
+            val draft = "#!/system/bin/sh\necho 未保存的草稿😀\n"
+            onUi { (editorField.get(activity) as ShellCodeEditText).apply { setText(draft); setSelection(7) } }
+            val recreated = addMonitor(ShellEditorActivity::class.java.name, null, false)
+            try {
+                onUi { activity!!.recreate() }
+                activity = checkNotNull(recreated.waitForActivityWithTimeout(10_000)) { "Editor recreation timed out" }
+            } finally { removeMonitor(recreated) }
+            onUi {
+                val editor = editorField.get(activity) as ShellCodeEditText
+                check(editor.isEnabled && editor.text.toString() == draft && editor.selectionStart == 7) { "Draft/cursor did not survive recreation" }
+            }
+            check(file.readBytes().contentEquals(original)) { "Recreation modified the original script" }
+            return "SH editor recreation: unsaved Unicode draft and cursor restored; BOM/CRLF original unchanged"
+        } finally {
+            activity?.let { current -> onUi { current.finish() } }
+            file.delete()
+        }
+    }
+
     private fun launchMainActivity(): Activity {
         // Do not wait for global UI idleness: the live glass continuously redraws.
         val monitor = addMonitor(MainActivity::class.java.name, null, false)
@@ -929,9 +976,9 @@ class FeatureSmokeInstrumentation : Instrumentation() {
                     check(checkNotNull(target) { "No clickable card for $title" }.performClick())
                 }
                 check(descendants(rootView).filterIsInstance<TextView>().none { it.text == "run (2).SH" })
-                clickTitle("📁 $projectName")
+                clickTitle(projectName)
                 check(descendants(rootView).filterIsInstance<TextView>().none { it.text == "run (2).SH" })
-                clickTitle("📁 bin")
+                clickTitle("bin")
                 clickTitle("run (2).SH")
                 val selected = MainActivity::class.java.getDeclaredField("selected").apply { isAccessible = true }.get(activity) as ManagedFile
                 check(selectedProgram && selected.kind == "project" && selected.name == "$projectName/bin/run (2).SH")

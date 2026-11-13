@@ -108,7 +108,7 @@ class RootExecutor {
     /** List one directory without losing filenames that contain spaces or punctuation. */
     fun browse(path: String): Pair<CommandResult, List<BrowserEntry>> {
         require(validPath(path)) { "目录路径无效" }
-        val result = runBounded("""
+        val result = CancellableCommand().run("""
             set -eu -o pipefail
             d=${quote(path)}
             [ -d "${'$'}d" ] && [ -r "${'$'}d" ] || { echo '目录不存在或不可读取'; exit 45; }
@@ -117,7 +117,7 @@ class RootExecutor {
             find "${'$'}d" -mindepth 1 -maxdepth 1 -type f -print0 | base64 | tr -d '\n'
             printf '\n'
             find "${'$'}d" -mindepth 1 -maxdepth 1 -type l -print0 | base64 | tr -d '\n'
-        """.trimIndent(), seconds = 10, completeOutputLimit = 8 * 1024 * 1024)
+        """.trimIndent(), seconds = 10, limit = 8 * 1024 * 1024)
         if (result.code == 124 || result.code == 137) return CommandResult(result.code, "目录读取超时，请重试") to emptyList()
         if (result.code != 0) return result to emptyList()
         val types = listOf("d", "f", "l")

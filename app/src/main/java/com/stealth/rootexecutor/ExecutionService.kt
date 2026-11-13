@@ -10,15 +10,15 @@ import java.util.concurrent.Executors
 object SessionState {
     val startGate = ExecutionStartGate()
     private val main = Handler(Looper.getMainLooper())
-    private val history = StringBuilder()
+    private val history = TerminalOutputBuffer()
     private val observers = linkedSetOf<(String) -> Unit>()
-    private val pending = StringBuilder()
+    private val pending = TerminalOutputBuffer(96_000, 128_000)
     private var scheduled = false
     private val flush = Runnable {
         val batch: Pair<String, List<(String) -> Unit>>
         synchronized(this) {
-            batch = pending.toString() to observers.toList()
-            pending.clear(); scheduled = false
+            batch = pending.take() to observers.toList()
+            scheduled = false
         }
         batch.second.forEach { it(batch.first) }
     }
@@ -35,18 +35,17 @@ object SessionState {
     @Volatile var rows = 24
     @Synchronized fun output(text: String) {
         history.append(text)
-        if (history.length > 512_000) history.delete(0, history.length - 400_000)
         pending.append(text)
-        if (pending.length > 512_000) pending.delete(0, pending.length - 400_000)
         if (!scheduled) { scheduled = true; main.postDelayed(flush, 32) }
     }
     @Synchronized fun subscribe(listener: (String) -> Unit) {
         if (scheduled) { main.removeCallbacks(flush); flush.run() }
-        observers.add(listener); listener(history.toString())
+        observers.add(listener); listener(history.snapshot())
     }
     @Synchronized fun unsubscribe(listener: (String) -> Unit) { observers.remove(listener) }
-    @Synchronized fun clearOutput() {
-        history.clear(); pending.clear(); main.removeCallbacks(flush); scheduled = false
+    @Synchronized fun clearOutput(continueStream: Boolean = false) {
+        history.clear(continueStream); pending.clear(continueStream)
+        main.removeCallbacks(flush); scheduled = false
     }
     @Synchronized fun clear() { if (!running) clearOutput() }
 }
@@ -127,22 +126,18 @@ class ExecutionService : Service() {
         main.postDelayed(watchdog!!, timeoutSeconds * 1000L)
         executor.execute {
             val log = File(cacheDir, "$token.log")
-            var writer: java.io.BufferedWriter? = null
+            var writer: BatchedSessionLog? = null
             try {
                 check(sendMode.valid(inputSteps, expectedPrompts)) {
                     "输入方案配置不完整，请补齐提示词或改用延时发送；未启动脚本"
                 }
                 cacheDir.listFiles()?.filter { it.name.matches(Regex("[a-f0-9-]+\\.log")) && System.currentTimeMillis() - it.lastModified() > 86_400_000 }?.forEach { it.delete() }
-                if (saveOutput) writer = log.bufferedWriter()
-                var logSize = 0
+                if (saveOutput) writer = BatchedSessionLog(log.bufferedWriter())
                 val outputLock = Any()
                 val display: (String) -> Unit = { text -> synchronized(outputLock) {
                     val safe = redactor.accept(text)
                     SessionState.output(safe)
-                    if (logSize < 131_072) {
-                        val chunk = safe.take(131_072 - logSize)
-                        writer?.write(chunk); writer?.flush(); logSize += chunk.length
-                    }
+                    writer?.append(safe)
                 } }
                 val callback: (String) -> Unit = { text -> prompts.append(text); display(text) }
                 lease.acquire(10 * 60_000L)
@@ -177,12 +172,12 @@ class ExecutionService : Service() {
                 SessionState.status = failureReason?.let { "执行失败 · $it" } ?: "已终止"
                 val error = "\r\n${SessionState.status}\r\n"
                 SessionState.output(error)
-                runCatching { writer?.write(error) }
+                runCatching { writer?.append(error) }
             } finally {
                 stopping = true
                 watchdog?.let { main.removeCallbacks(it) }; watchdog = null
                 val tail = redactor.finish()
-                if (tail.isNotEmpty()) SessionState.output(tail)
+                if (tail.isNotEmpty()) { SessionState.output(tail); runCatching { writer?.append(tail) } }
                 runCatching { writer?.close() }
                 prompts.clear()
                 ExecutionHistory.finish(this, token, SessionState.status, SessionState.exitCode)

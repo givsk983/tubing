@@ -32,18 +32,14 @@ private data class UriImportResult(val name: String, val archive: File? = null,
 
 class MainActivity : Activity() {
     private val io = Executors.newSingleThreadExecutor()
-    private val browserIo = Executors.newFixedThreadPool(2)
+    private val browserLoader = BrowserDirectoryLoader { action -> runOnUiThread(action) }
     private val directoryCache = BrowserDirectoryCache()
-    private val browserRequests = BrowserRequestTokens()
-    private val browserReadTasks = arrayOfNulls<java.util.concurrent.Future<*>>(2)
     private val browserLoading = booleanArrayOf(false, false)
     private val loadedBrowserPaths = arrayOfNulls<String>(2)
     private var browserPanes: LinearLayout? = null
-    private val updateIo = Executors.newSingleThreadExecutor()
     private val appPickerIo = Executors.newSingleThreadExecutor()
     private val filePickerIo = Executors.newSingleThreadExecutor()
     private var exportingModule = false
-    private var checkingUpdate = false
     private var creatingPackage = false
     private var checkUpdateButton: Button? = null
     private val root = RootExecutor()
@@ -126,10 +122,11 @@ class MainActivity : Activity() {
     private var rightBrowserCaption: TextView? = null
     private val accent get() = palette.accent
     private val palette get() = UiPalette.forTheme(dark)
+    private val terminalOutput = TerminalOutputPump { id, chunk ->
+        terminal?.evaluateJavascript("window.setMode(${JSONObject.quote(SessionState.mode.key)});window.feed(${JSONObject.quote(chunk)},$id)", null)
+    }
     private val listener: (String) -> Unit = { chunk ->
-        if (terminalReady) {
-            terminal?.evaluateJavascript("window.setMode(${JSONObject.quote(SessionState.mode.key)});window.feed(${JSONObject.quote(chunk)})", null)
-        }
+        if (terminalReady) terminalOutput.offer(chunk)
         terminalStatus?.text = SessionState.status
         modeSelector?.text = modeText()
     }
@@ -959,42 +956,35 @@ class MainActivity : Activity() {
         val currentEntries = if (left) leftEntries else rightEntries
         val snapshot = directoryCache[path] ?: currentEntries.takeIf { loadedBrowserPaths[index] == path && !browserLoading[index] }
         val direction = directoryDirection(from, path)
-        val token = browserRequests.begin(left)
-        browserReadTasks[index]?.cancel(false)
         browserLoading[index] = snapshot == null
         loadedBrowserPaths[index] = if (snapshot != null) path else null
         if (left) leftEntries = snapshot ?: emptyList() else rightEntries = snapshot ?: emptyList()
         browserTransitionDirections[left] = if (snapshot != null) direction else 0
         // Show the new path immediately; cached entries can be used without waiting for su.
         if (from != null || displayedBrowserPaths[left] != path || snapshot == null || snapshot != currentEntries) replaceBrowserPane(left)
-        browserReadTasks[index] = browserIo.submit {
-            if (!browserRequests.isCurrent(left, token)) return@submit
-            val (result, entries) = try { browserDirectoryReader(path) }
-                catch (error: Exception) { CommandResult(-1, error.message ?: "读取失败") to emptyList() }
-            runOnUiThread {
-                if (isDestroyed || !browserRequests.isCurrent(left, token) || path != (if (left) leftPath else rightPath)) return@runOnUiThread
-                val wasLoading = browserLoading[index]
-                val previous = if (left) leftEntries else rightEntries
-                browserLoading[index] = false
-                if (result.code == 0) {
-                    directoryCache.put(path, entries)
-                    loadedBrowserPaths[index] = path
-                    if (left) leftEntries = entries else rightEntries = entries
-                    val last = if (left) lastRecordedLeftPath else lastRecordedRightPath
-                    if (path != last) rememberBrowserDirectory(path)
-                    if (left) lastRecordedLeftPath = path else lastRecordedRightPath = path
-                } else {
-                    directoryCache.remove(path)
-                    loadedBrowserPaths[index] = null
-                    if (left) leftEntries = emptyList() else rightEntries = emptyList()
-                }
-                if (tab != 1) return@runOnUiThread
-                if (wasLoading || previous != entries || result.code != 0) {
-                    browserTransitionDirections[left] = if (wasLoading && result.code == 0) direction else 0
-                    replaceBrowserPane(left)
-                }
-                if (result.code != 0) message("${if (left) "左" else "右"}侧目录无法读取", result.output.ifBlank { "请检查目录路径和访问权限" })
+        browserLoader.load(left, { browserDirectoryReader(path) }) { result, entries ->
+            if (isDestroyed || path != (if (left) leftPath else rightPath)) return@load
+            val wasLoading = browserLoading[index]
+            val previous = if (left) leftEntries else rightEntries
+            browserLoading[index] = false
+            if (result.code == 0) {
+                directoryCache.put(path, entries)
+                loadedBrowserPaths[index] = path
+                if (left) leftEntries = entries else rightEntries = entries
+                val last = if (left) lastRecordedLeftPath else lastRecordedRightPath
+                if (path != last) rememberBrowserDirectory(path)
+                if (left) lastRecordedLeftPath = path else lastRecordedRightPath = path
+            } else {
+                directoryCache.remove(path)
+                loadedBrowserPaths[index] = null
+                if (left) leftEntries = emptyList() else rightEntries = emptyList()
             }
+            if (tab != 1) return@load
+            if (wasLoading || previous != entries || result.code != 0) {
+                browserTransitionDirections[left] = if (wasLoading && result.code == 0) direction else 0
+                replaceBrowserPane(left)
+            }
+            if (result.code != 0) message("${if (left) "左" else "右"}侧目录无法读取", result.output.ifBlank { "请检查目录路径和访问权限" })
         }
     }
 
@@ -1420,8 +1410,9 @@ class MainActivity : Activity() {
         listOf("中断" to "\u0003", "清屏" to "", "结束输入" to "\u0004", "制表" to "\t", "退出键" to "\u001b", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C", "回车" to "\r").forEach { (label, value) ->
             keys.addView(button(label) {
                 if (label == "清屏") {
-                    SessionState.clearOutput()
-                    web.evaluateJavascript("term.clear()", null)
+                    SessionState.clearOutput(continueStream = true)
+                    terminalOutput.reset()
+                    web.evaluateJavascript("window.clearOutput()", null)
                 } else web.evaluateJavascript("window.key(${JSONObject.quote(value)})", null)
             }.apply { isSingleLine = true }, LinearLayout.LayoutParams(dp(78), dp(46)))
         }
@@ -2026,8 +2017,16 @@ class MainActivity : Activity() {
                 ExecutionService.active?.send(value)
             }
             @JavascriptInterface fun resize(cols: Int, rows: Int) { SessionState.cols = cols; SessionState.rows = rows; ExecutionService.active?.resize(cols, rows) }
+            @JavascriptInterface fun outputConsumed(id: Long) { runOnUiThread {
+                if (!isDestroyed && terminal === this@apply) terminalOutput.consumed(id)
+            } }
             @JavascriptInterface fun ready() { runOnUiThread {
-                if (!isDestroyed) { terminalReady = true; evaluateJavascript("window.setSize(${prefs.getInt("fontSize", 14)})", null); SessionState.subscribe(listener) }
+                if (!isDestroyed && terminal === this@apply) {
+                    terminalOutput.reset()
+                    terminalReady = true
+                    evaluateJavascript("window.setSize(${prefs.getInt("fontSize", 14)})", null)
+                    SessionState.subscribe(listener)
+                }
             } }
         }, "Android")
         loadUrl("file:///android_asset/terminal/index.html?${if (dark) "dark" else "light"}")
@@ -2113,7 +2112,7 @@ class MainActivity : Activity() {
         synchronized(inputCaptureLock) {
             inputCaptureBuffer.clear(); skipNextLineFeed = false; skipEscapeSequence = 0; inputCaptureTrackable = true
         }
-        SessionState.clear(); terminal?.evaluateJavascript("term.reset()", null)
+        SessionState.clear(); terminalOutput.reset(); terminal?.evaluateJavascript("window.resetOutput()", null)
         val mode = preferredMode()
         SessionState.mode = mode
         terminal?.evaluateJavascript("window.setMode(${JSONObject.quote(mode.key)})", null)
@@ -3655,8 +3654,8 @@ class MainActivity : Activity() {
             if (SessionState.running) message("暂时无法清理", "请在执行结束后清理临时文件。")
             else work({ root.cleanTmp() }) { message("清理临时文件", if (it.code == 0) "清理完成" else it.output) }
         })
-        checkUpdateButton = settingsRow(if (checkingUpdate) "正在检查更新…" else "检查更新") { checkForUpdates() }.apply {
-            isEnabled = !checkingUpdate
+        checkUpdateButton = settingsRow(if (updateChecker.busy) "正在检查更新…" else "检查更新") { checkForUpdates() }.apply {
+            isEnabled = !updateChecker.busy
         }
         projectGroup.addView(checkUpdateButton)
         content.addView(ScrollView(this).apply { addView(area) }, FrameLayout.LayoutParams(-1, -1))
@@ -3717,64 +3716,34 @@ class MainActivity : Activity() {
         }) })
     }
 
-    private fun checkForUpdates() {
-        if (checkingUpdate) return
-        val installed = packageManager.getPackageInfo(packageName, 0).versionName
-        if (installed == null) {
-            message("检查更新失败", "无法读取当前应用版本。")
-            return
+    private val updateChecker by lazy { UpdateCheckController(this, object : UpdateCheckController.Ui {
+        override fun checking(busy: Boolean) {
+            checkUpdateButton?.apply { text = if (busy) "正在检查更新…" else "检查更新"; isEnabled = !busy }
         }
-        checkingUpdate = true
-        checkUpdateButton?.apply { text = "正在检查更新…"; isEnabled = false }
-        updateIo.execute {
-            val result = runCatching { GitHubUpdateChecker.check() }
-            runOnUiThread {
-                checkingUpdate = false
-                if (isDestroyed || isFinishing) return@runOnUiThread
-                checkUpdateButton?.apply { text = "检查更新"; isEnabled = true }
-                result.fold(onSuccess = { release ->
-                    if (release == null) {
-                        message("暂无可用版本", "GitHub 暂无可识别的已发布版本。当前版本：$installed")
-                    } else if (!AppUpdates.isNewer(release, installed)) {
-                        message("暂无新版本", "当前版本：$installed\nGitHub 最新版本：${release.tag}${if (release.prerelease) "（测试版）" else ""}")
-                    } else {
-                        styledDialog("发现新版本 ${release.tag}", "当前版本 $installed${if (release.prerelease) " · 测试版更新" else ""}", {
-                            column().apply {
-                                addView(text(release.title, 17f).apply { typeface = Typeface.DEFAULT_BOLD })
-                                addView(text(release.notes.ifBlank { "此版本暂未提供更新说明。" }, 14f, mutedColor()).apply {
-                                    setTextIsSelectable(true)
-                                })
-                                addView(text(if (release.apkUrl != null) "安装包将在应用内下载，校验后由系统确认安装，保留现有数据。"
-                                    else "此版本尚未上传 APK，请稍后重新检查。", 13f, mutedColor()))
-                            }
-                        }, { dialog -> listOf(
-                            "稍后" to { dialog.dismiss() },
-                            (if (release.apkUrl != null) "立即更新" else "重新检查") to {
-                                dialog.dismiss()
-                                if (release.apkUrl == null) checkForUpdates()
-                                else if (SessionState.running || SessionState.startGate.isPreparing())
-                                    message("请先结束任务", "执行结束后再安装应用更新。")
-                                else startActivity(Intent(this, AppUpdateActivity::class.java)
-                                    .putExtra("tag", release.tag).putExtra("url", release.apkUrl)
-                                    .putExtra("size", release.apkSize).putExtra("sha256", release.apkSha256))
-                            }
-                        ) })
-                    }
-                }, onFailure = { error ->
-                    val reason = when (error) {
-                        is java.net.SocketTimeoutException -> "连接 GitHub 超时，请检查网络后重试。"
-                        is java.io.IOException -> "无法连接 GitHub，请检查网络后重试。"
-                        is org.json.JSONException -> "GitHub 返回的数据无法读取，请稍后重试。"
-                        else -> error.message ?: "检查失败，请稍后重试。"
-                    }
-                    styledDialog("检查更新失败", "", { text(reason, 14f) }, { dialog -> listOf(
-                        "关闭" to { dialog.dismiss() },
-                        "重试" to { dialog.dismiss(); checkForUpdates() }
-                    ) })
-                })
-            }
+        override fun message(title: String, detail: String) = this@MainActivity.message(title, detail)
+        override fun offer(installed: String, release: AppRelease, confirm: () -> Unit) {
+            styledDialog("发现新版本 ${release.tag}", "当前版本 $installed${if (release.prerelease) " · 测试版更新" else ""}", {
+                column().apply {
+                    addView(text(release.title, 17f).apply { typeface = Typeface.DEFAULT_BOLD })
+                    addView(text(release.notes.ifBlank { "此版本暂未提供更新说明。" }, 14f, mutedColor()).apply {
+                        setTextIsSelectable(true)
+                    })
+                    addView(text(if (release.apkUrl != null) "安装包将在应用内下载，校验后由系统确认安装，保留现有数据。"
+                        else "此版本尚未上传 APK，请稍后重新检查。", 13f, mutedColor()))
+                }
+            }, { dialog -> listOf(
+                "稍后" to { dialog.dismiss() },
+                (if (release.apkUrl != null) "立即更新" else "重新检查") to { dialog.dismiss(); confirm() }
+            ) })
         }
-    }
+        override fun failed(reason: String, retry: () -> Unit) {
+            styledDialog("检查更新失败", "", { text(reason, 14f) }, { dialog -> listOf(
+                "关闭" to { dialog.dismiss() }, "重试" to { dialog.dismiss(); retry() }
+            ) })
+        }
+    }) }
+
+    private fun checkForUpdates() = updateChecker.check()
 
     private fun editExecutionHistoryLimit() {
         val input = formInput("保留次数", ExecutionHistory.limit(this).toString()).apply {
@@ -3897,12 +3866,10 @@ class MainActivity : Activity() {
         executionFilePicker?.dismiss()
         executionFilePicker = null
         favoritesSheet?.closeImmediately()
-        browserRequests.invalidateAll()
-        browserReadTasks.forEach { it?.cancel(false) }
-        browserIo.shutdown()
+        browserLoader.close()
         thumbnails.close()
         startButtonHandler.removeCallbacks(startButtonRefresh)
-        SessionState.unsubscribe(listener); terminalReady = false; terminal?.destroy()
-        io.shutdown(); updateIo.shutdownNow(); appPickerIo.shutdownNow(); filePickerIo.shutdownNow(); super.onDestroy()
+        SessionState.unsubscribe(listener); terminalOutput.reset(); terminalReady = false; terminal?.destroy()
+        io.shutdown(); updateChecker.close(); appPickerIo.shutdownNow(); filePickerIo.shutdownNow(); super.onDestroy()
     }
 }

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="./CHANGELOG.md"><img alt="Version v1.5.1" src="https://img.shields.io/badge/version-v1.5.1-28B9CF?style=flat-square"></a>
+  <a href="./CHANGELOG.md"><img alt="Version v1.5.2" src="https://img.shields.io/badge/version-v1.5.2-28B9CF?style=flat-square"></a>
   <img alt="Android 8.0 or newer" src="https://img.shields.io/badge/Android-8.0%2B-28B9CF?style=flat-square&logo=android&logoColor=white">
   <img alt="Root required" src="https://img.shields.io/badge/Root-required-101820?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-101820?style=flat-square&logo=kotlin&logoColor=white">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/givsk983/tubing/releases/download/v1.5.1/tubing-v1.5.1.apk">下载已发布 APK（1.5.1）</a>
+  <a href="https://github.com/givsk983/tubing/releases/download/v1.5.2/tubing-v1.5.2.apk">下载已发布 APK（1.5.2）</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="./ARCHITECTURE.md">架构说明</a>
   · <a href="./TESTING.md">测试清单</a>
@@ -23,7 +23,7 @@
 </p>
 
 > [!WARNING]
-> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前源码为 `v1.5.1`，沿用 Debug 签名的瘦身测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
+> tubing 会在设备上执行 Root 命令。请只导入你已阅读并信任的文件。当前源码为 `v1.5.2`，沿用 Debug 签名的瘦身测试版，不同 Root 管理器、输入法与 OEM 后台策略仍需真机验证。
 
 ## 它解决什么问题
 
@@ -79,11 +79,13 @@
 
 设置页「终端与执行 → 快捷执行后自动关闭 App 后台」默认关闭。开启后，首页 Start 和模块绑定的快捷任务结束（含失败或终止），保存记录、日志并清理服务后，移除 Tubing 最近任务并结束自身进程。执行中保持运行，普通执行保持原行为；重新打开 App 后可查看执行历史。
 
+1.5.2 优化目录切换与终端刷屏：快速切换目录会取消旧的 Root 扫描；终端按消费确认分批发送，显示缓存超限时提示省略，并保护 ANSI 控制序列与 Unicode 字符。执行日志改为批量刷新，清屏和新任务不会重新显示排队的旧内容。
+
 ## 执行路径
 
 配套 Magisk 模块支持识别前台 App 并执行绑定快捷方式（脚本及输入方案）。安装本次配套 APK 和模块 ZIP 后，在「设置 → 面具模块 · App 自动执行」配置包名与快捷方式。详见[模块安装与触发规则](./magisk/README.md)。
 
-当前 1.4.9 已内置配套模块 1.1.2，可在「设置 → 面具模块 · App 自动执行 → 安装 / 更新配套模块」导出并打开 Magisk / KernelSU 安装。新增绑定可直接搜索选择手机上的 App；同包名系统分身共用同一方案与策略。输入方案默认使用旧版延时发送，无需填写提示词；也可在编辑方案中选择“等待提示词”。详见[改进清单与配置方式](./AUTOMATION_SAFETY.md)。
+当前 1.5.2 已内置配套模块 1.1.2，可在「设置 → 面具模块 · App 自动执行 → 安装 / 更新配套模块」导出并打开 Magisk / KernelSU 安装。新增绑定可直接搜索选择手机上的 App；同包名系统分身共用同一方案与策略。输入方案默认使用旧版延时发送，无需填写提示词；也可在编辑方案中选择“等待提示词”。详见[改进清单与配置方式](./AUTOMATION_SAFETY.md)。
 
 文件管理中长按普通文件，在菜单中选择“执行”，会校验 SH / ELF 后直接从原目录启动，无需先导入。项目内程序会保留项目身份；库外程序使用原路径并保留相对资源访问。非程序文件与符号链接会被拒绝，已有任务运行时不会并发启动新任务。共享存储中的 SH 使用 `sh` 读取执行；ELF 仍受目标挂载的 `noexec` 限制。
 
@@ -113,20 +115,20 @@
 
 ### 2. 安装测试版
 
-本地 1.5.1 瘦身测试包为 `dist/tubing-v1.5.1.apk`。
+本地 1.5.2 瘦身测试包为 `dist/tubing-v1.5.2.apk`。
 
 1.5.1 起可在「设置 → 检查更新 → 立即更新」中下载并安装新版，全程无需浏览器。首次更新需要允许 Tubing 安装未知应用，授权返回后继续由系统确认安装；取消安装可在当前更新页重试。安装前会校验发布摘要（提供时）、APK 签名、包名和版本。自定义包名副本需由原应用重新生成对应新版副本。
 
-已发布的安装包见 [GitHub Release](https://github.com/givsk983/tubing/releases)。本地 1.5.1 测试包可通过 ADB 覆盖安装并保留数据：
+已发布的安装包见 [GitHub Release](https://github.com/givsk983/tubing/releases)。本地 1.5.2 测试包可通过 ADB 覆盖安装并保留数据：
 
 ```bash
-adb install -r tubing-v1.5.1.apk
+adb install -r tubing-v1.5.2.apk
 ```
 
-本地 1.5.1 APK 的 SHA-256：
+本地 1.5.2 APK 的 SHA-256：
 
 ```text
-d23764841afb0efada385ea11fd86e7c1424bf5487d3a779344f0f1dab726b71
+3212b5227b2d72a500f90c7d22eff8d3ce988277563afc91e0fe7794e86de7e8
 ```
 
 ### 3. 完成第一次执行
@@ -199,7 +201,7 @@ app/src/main/java/com/stealth/rootexecutor/
 
 ## 当前状态
 
-`v1.4.9` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏、内置 SH 编辑器，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选并统一导入 SH/ELF 文件，以及从其他应用分享导入 ZIP / SH / ELF。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
+`v1.5.2` 已包含快捷/完整界面、执行历史、输入记忆与方案、快捷方式、双栏文件管理、路径收藏、内置 SH 编辑器，以及 Pipe/PTY 两种执行后端，并支持从 ZIP 预览、多选并统一导入 SH/ELF 文件，以及从其他应用分享导入 ZIP / SH / ELF。构建包仍标记为测试版；Root、SELinux、锁屏、任务划走与输入法兼容性请按 [TESTING.md](./TESTING.md) 在真实设备上验证。
 
 ## 第三方组件与许可
 
